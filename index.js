@@ -5,7 +5,8 @@ const path = require('path');
 const express = require('express');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const CHAT_ID = process.env.CHAT_ID;
+// Split the comma-separated string into an array of clean IDs
+const CHAT_IDS = process.env.CHAT_ID ? process.env.CHAT_ID.split(',') : [];
 const PORT = process.env.PORT || 3000;
 const CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes
 const CACHE_FILE = path.join(__dirname, 'past_tasks.json');
@@ -20,8 +21,8 @@ if (!fs.existsSync(CACHE_FILE)) {
     fs.writeFileSync(CACHE_FILE, JSON.stringify([]));
 }
 
-// 3. Notification Engine
-async function sendNotification(task) {
+// 3. Notification Engine (Modified to accept a specific chat ID)
+async function sendNotification(task, chatId) {
     const message = `🚨 *New Bitget Builder Task Available!* 🚨\n\n` +
                     `📌 *Title:* ${task.title || 'Untitled Campaign'}\n` +
                     `🆔 *ID:* ${task.id || 'N/A'}\n\n` +
@@ -34,19 +35,19 @@ async function sendNotification(task) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                chat_id: CHAT_ID,
+                chat_id: chatId.trim(), // Remove any accidental spaces
                 text: message,
                 parse_mode: 'Markdown',
                 disable_web_page_preview: true
             })
         });
-        console.log(`Notification sent for task: ${task.id}`);
+        console.log(`Notification sent cleanly to account: ${chatId.trim()}`);
     } catch (err) {
-        console.error('Error sending Telegram notification:', err);
+        console.error(`Error sending Telegram notification to ${chatId}:`, err);
     }
 }
 
-// 4. Core Core Scanning Logic
+// 4. Core Scanning Logic
 async function scanTasks() {
     console.log(`[${new Date().toLocaleTimeString()}] Scanning Bitget Builder...`);
     try {
@@ -70,7 +71,11 @@ async function scanTasks() {
         for (const task of dynamicTasks) {
             if (task.id && !seenTasks.includes(task.id)) {
                 seenTasks.push(task.id);
-                await sendNotification(task);
+                
+                // Loop through all registered Telegram accounts for this task
+                for (const chatId of CHAT_IDS) {
+                    await sendNotification(task, chatId);
+                }
                 foundNewTask = true;
             }
         }
