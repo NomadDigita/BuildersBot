@@ -1,5 +1,5 @@
 require('dotenv').config();
-const fetch = require('node-fetch'); // Standardized fetch import
+const fetch = require('node-fetch'); 
 const express = require('express');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -30,12 +30,57 @@ function escapeHTML(str) {
         .replace(/>/g, '&gt;');
 }
 
-// Robust date parser for (GMT+8) formats
+// Robust ISO-8601 timezone parser to support exact offsets like (GMT+8)
 function parseTaskDate(dateStr) {
     if (!dateStr) return 0;
-    const cleanStr = String(dateStr).replace(/\(GMT[+-]\d+\)/i, '').trim();
-    const parsed = Date.parse(cleanStr);
+    
+    const tzMatch = String(dateStr).match(/\(GMT([+-]\d+)\)/i);
+    let cleanStr = String(dateStr).replace(/\(GMT[+-]\d+\)/i, '').trim();
+    
+    // Normalize format to YYYY-MM-DDTHH:mm
+    const normalized = cleanStr.replace(/\//g, '-').replace(' ', 'T');
+    
+    if (tzMatch) {
+        const offsetNum = parseInt(tzMatch[1], 10);
+        const sign = offsetNum >= 0 ? '+' : '-';
+        const absoluteOffset = Math.abs(offsetNum);
+        const formattedOffset = `${sign}${String(absoluteOffset).padStart(2, '0')}:00`;
+        
+        // Assemble valid ISO-8601 string: "2026-05-31T18:00:00+08:00"
+        const isoString = `${normalized}:00${formattedOffset}`;
+        const parsed = Date.parse(isoString);
+        return isNaN(parsed) ? 0 : parsed;
+    }
+    
+    const parsed = Date.parse(normalized);
     return isNaN(parsed) ? 0 : parsed;
+}
+
+// Generates a professional countdown string
+function getCountdownString(deadlineStr) {
+    const deadlineMs = parseTaskDate(deadlineStr);
+    if (!deadlineMs) return 'Not Specified';
+    
+    const diffMs = deadlineMs - Date.now();
+    if (diffMs <= 0) return 'Ended';
+
+    const diffMins = Math.floor(diffMs / (1000 * 60));
+    const diffHours = Math.floor(diffMins / 60);
+    const diffDays = Math.floor(diffHours / 24);
+
+    const remainingHours = diffHours % 24;
+    const remainingMins = diffMins % 60;
+
+    let parts = [];
+    if (diffDays > 0) {
+        parts.push(`${diffDays}d`);
+    }
+    if (remainingHours > 0 || diffDays > 0) {
+        parts.push(`${remainingHours}h`);
+    }
+    parts.push(`${remainingMins}m`);
+
+    return parts.join(' ');
 }
 
 // Initialize Render Health Check Server
@@ -68,31 +113,27 @@ async function sendMessage(chatId, text) {
 
 // Strict UID Checker matching the API schema
 function hasSpecificUIDs(task) {
-    // 1. If automatic UIDs are assigned
     const autoUids = task.autoSelectedUIDs;
     if (autoUids) {
         if (Array.isArray(autoUids) && autoUids.length > 0) return true;
         if (typeof autoUids === 'string' && autoUids.trim().length > 0) return true;
     }
     
-    // 2. If manual UIDs are assigned
     const manualUids = task.manualSelectedUIDs;
     if (manualUids) {
         if (Array.isArray(manualUids) && manualUids.length > 0) return true;
         if (typeof manualUids === 'string' && manualUids.trim().length > 0) return true;
     }
 
-    // 3. If manual selected boolean is flagged
     if (task.manualSelected === true) return true;
 
     return false;
 }
 
-// Check Type Matcher (Automatic vs Manual verification check)
+// Check Type Matcher
 function matchesTaskCheckType(task) {
     if (TASK_CHECK_TYPE === 'both') return true;
 
-    // Evaluate auto properties
     const isAutoCheck = task.autoSelectedUIDs !== undefined || 
                         String(task.taskCategory || '').toLowerCase().includes('auto');
 
@@ -125,11 +166,10 @@ async function fetchRawCampaigns() {
     return Array.isArray(data.campaigns) ? data.campaigns : (Array.isArray(data) ? data : []);
 }
 
-// Cleaned and fully targeted Filter Engine
+// Filter Engine
 async function fetchCampaigns() {
     const allTasks = await fetchRawCampaigns();
     
-    // SORT BY DEADLINE DESCENDING (Future/active deadlines will be at the very top of the list)
     allTasks.sort((a, b) => {
         const timeA = parseTaskDate(a.deadline);
         const timeB = parseTaskDate(b.deadline);
@@ -137,16 +177,13 @@ async function fetchCampaigns() {
     });
 
     return allTasks.filter(task => {
-        // 1. Time Check (Ongoing check)
         const dueStr = task.deadline;
         if (dueStr) {
             const endMs = parseTaskDate(dueStr);
             if (endMs !== 0 && endMs < Date.now()) return false; 
         }
 
-        // 2. Blacklist / Name filter
         const titleStr = String(task.title || '').toLowerCase();
-        const categoryStr = String(task.taskCategory || '').toLowerCase();
         const teamStr = String(task.targetTeam || task.targetLabel || '').toLowerCase();
 
         if (titleStr.includes('(cmc)') || 
@@ -157,7 +194,6 @@ async function fetchCampaigns() {
             return false; 
         }
 
-        // 3. Strict Whitelist (Core, Trainee, VIP roles only)
         const isTargetedGroup = teamStr === '' || 
                                teamStr === 'none' || 
                                teamStr === 'null' || 
@@ -168,11 +204,7 @@ async function fetchCampaigns() {
                                teamStr.includes('open');
 
         if (!isTargetedGroup) return false; 
-
-        // 4. Reject any targeted user restriction (Specific UIDs)
         if (hasSpecificUIDs(task)) return false;
-
-        // 5. Automatic vs Manual task toggle
         if (!matchesTaskCheckType(task)) return false;
 
         return true; 
@@ -188,7 +220,6 @@ async function getTaskFilteringReport() {
             return `⚠️ <b>API returned 0 tasks.</b>\n\nEnsure your session cookie is correctly added in Render.`;
         }
 
-        // Sort descending
         allTasks.sort((a, b) => {
             const timeA = parseTaskDate(a.deadline);
             const timeB = parseTaskDate(b.deadline);
@@ -260,11 +291,13 @@ async function scanTasksAutomatic() {
                     const taskTitle = task.title || 'Untitled Campaign';
                     const due = task.deadline || 'Time Not Specified';
                     const taskType = task.maxContent ? `Max Content: ${task.maxContent}` : 'Open Task';
+                    const countdown = getCountdownString(due);
 
                     const message = `🚨 <b>NEW ONGOING TASK</b> 🚨\n\n` +
                                     `📌 <b>Title:</b> ${escapeHTML(taskTitle)}\n` +
                                     `🆔 <b>ID:</b> <code>${task.id}</code>\n` +
                                     `⏳ <b>Ends:</b> ${escapeHTML(due)}\n` +
+                                    `⏱️ <b>Time Left:</b> <code>${countdown}</code>\n` +
                                     `⚡ <b>Type:</b> ${escapeHTML(taskType)}\n\n` +
                                     `🔗 <a href="https://www.bitgetbuilder.com/">Execute on Builder Hub</a>`;
 
@@ -321,10 +354,12 @@ async function handleCommand(chatId, text) {
                 const taskTitle = task.title || 'Untitled Task';
                 const due = task.deadline || 'Time Not Specified';
                 const taskType = task.maxContent ? `Max Content: ${task.maxContent}` : 'Open Task';
+                const countdown = getCountdownString(due);
 
                 reportMessage += `📌 <b>Title:</b> ${escapeHTML(taskTitle)}\n`;
                 reportMessage += `🆔 <b>ID:</b> <code>${task.id || 'N/A'}</code>\n`;
                 reportMessage += `⏳ <b>Ends:</b> ${escapeHTML(due)}\n`;
+                reportMessage += `⏱️ <b>Time Left:</b> <code>${countdown}</code>\n`;
                 reportMessage += `⚡ <b>Type:</b> ${escapeHTML(taskType)}\n\n`;
             }
             
