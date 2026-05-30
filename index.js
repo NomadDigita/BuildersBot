@@ -6,12 +6,11 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_IDS = process.env.CHAT_ID ? process.env.CHAT_ID.split(',') : [];
 const PORT = process.env.PORT || 3000;
 
-// High-frequency 1-minute interval
 const CHECK_INTERVAL = 1 * 60 * 1000; 
 
 let offset = 0;
-let seenTasks = new Set(); // High-speed in-memory storage
-let isFirstBoot = true;    // Stealth boot state
+let seenTasks = new Set(); 
+let isFirstBoot = true;    
 
 // 1. Initialize Render Health Check Server
 const app = express();
@@ -37,7 +36,7 @@ async function sendMessage(chatId, text) {
     }
 }
 
-// 3. Filtered Bitget API Fetcher
+// 3. Filtered & Sorted Bitget API Fetcher
 async function fetchCampaigns() {
     const response = await fetch("https://api.bitgetbuilder.com/server/campaigns", {
         "headers": {
@@ -52,10 +51,33 @@ async function fetchCampaigns() {
     
     let allTasks = Array.isArray(data.campaigns) ? data.campaigns : (Array.isArray(data) ? data : []);
     
-    // STRICT FILTER: Keep only live/ongoing tasks. Ignore ended, completed, submitted, or expired ones.
+    // FIX 1: Sort by ID descending so the newest tasks (e.g. 1094) are always at the top!
+    allTasks.sort((a, b) => {
+        const idA = parseInt(String(a.id).replace(/\D/g, '')) || 0;
+        const idB = parseInt(String(b.id).replace(/\D/g, '')) || 0;
+        return idB - idA;
+    });
+
+    // FIX 2: Deep filter to kill old tasks based on time and status codes
     return allTasks.filter(task => {
-        const status = String(task.status || task.state || task.taskStatus || '').toLowerCase();
-        return status !== 'ended' && status !== 'submitted' && status !== 'completed' && status !== 'expired';
+        // Check if the due date has already passed
+        const dueStr = task.endTime || task.end_time || task.dueDate || task.deadline || task.due;
+        if (dueStr) {
+            const endMs = new Date(dueStr).getTime();
+            if (endMs < Date.now()) return false; // Time is up, kill it
+        }
+
+        // Check if Bitget marked it as dead using numbers (2, 3) or strings
+        const str = JSON.stringify(task).toLowerCase();
+        if (str.includes('"status":2') || 
+            str.includes('"status":3') || 
+            str.includes('"state":2') || 
+            str.includes('ended') || 
+            str.includes('submitted')) {
+            return false;
+        }
+
+        return true; 
     });
 }
 
@@ -70,20 +92,19 @@ async function scanTasksAutomatic() {
             if (task.id && !seenTasks.has(task.id)) {
                 seenTasks.add(task.id);
 
-                // Broadcast if not stealth booting
                 if (!isFirstBoot) {
                     foundNewTask = true;
                     
                     const taskTitle = task.title || task.name || task.taskCategory || 'Untitled Campaign';
-                    const taskTeam = task.team || task.assignedBy || 'N/A';
-                    const maxContent = task.maxContent || task.fcfs || 'N/A';
+                    const due = task.endTime || task.end_time || task.dueDate || task.deadline || 'Time Not Specified';
+                    const taskType = task.maxContent ? `Max Content: ${task.maxContent}` : (task.fcfs ? 'FCFS' : 'Open Task');
 
-                    const message = `🚨 *NEW PRIORITY TASK DEPLOYED* 🚨\n\n` +
+                    const message = `🚨 *NEW ONGOING TASK* 🚨\n\n` +
                                     `📌 *Title:* ${taskTitle}\n` +
-                                    `🆔 *Sys ID:* \`${task.id}\`\n` +
-                                    `👥 *Division:* ${taskTeam}\n` +
-                                    `⚡ *Capacity:* ${maxContent}\n\n` +
-                                    `[Execute on Builder Hub](https://www.bitgetbuilder.com/)`;
+                                    `🆔 *ID:* \`${task.id}\`\n` +
+                                    `⏳ *Ends:* ${due}\n` +
+                                    `⚡ *Type:* ${taskType}\n\n` +
+                                    `🔗 [Execute on Builder Hub](https://www.bitgetbuilder.com/)`;
 
                     for (const chatId of CHAT_IDS) {
                         await sendMessage(chatId.trim(), message);
@@ -93,7 +114,7 @@ async function scanTasksAutomatic() {
         }
 
         if (isFirstBoot) {
-            console.log(`Stealth boot complete. Memorized ${seenTasks.size} active tasks. Notifications armed.`);
+            console.log(`Stealth boot complete. Memorized ${seenTasks.size} active tasks.`);
             isFirstBoot = false; 
         } else if (!foundNewTask) {
             console.log('No new tasks found this cycle.');
@@ -111,12 +132,10 @@ async function handleCommand(chatId, text) {
     if (cleanText === '/start') {
         const premiumMenu = `💎 *Builders Watcher OS | Elite Edition* 💎\n\n` +
                             `*System Status:* ONLINE 🟢\n` +
-                            `*Authorized Commander:* Asiwaju (@asiwajubtc)\n\n` +
-                            `High-frequency architectural node actively monitoring the Bitget Builder Hub for tier-1 opportunities.\n\n` +
+                            `*Commander:* Asiwaju (@asiwajubtc)\n\n` +
                             `⚙️ *System Specifications:*\n` +
-                            `⏱️ *Ping Rate:* 60,000ms (1 Minute)\n` +
-                            `🔕 *Stealth Boot:* Active (Spam protection)\n` +
-                            `🧹 *Data Filter:* Active (Dead tasks ignored)\n\n` +
+                            `⏱️ *Ping Rate:* 1 Minute\n` +
+                            `🧹 *Data Filter:* Active (Ended tasks destroyed)\n\n` +
                             `🛠️ *Available Directives:*\n` +
                             `🔹 /start - Launch OS Interface\n` +
                             `🔹 /scan - Request real-time index of live tasks`;
@@ -125,7 +144,7 @@ async function handleCommand(chatId, text) {
     } 
     
     else if (cleanText === '/scan') {
-        await sendMessage(chatId, `⏳ *Querying Bitget servers for live bounties...*`);
+        await sendMessage(chatId, `🔍 *Scanning for ONGOING tasks only...*`);
         try {
             const activeTasks = await fetchCampaigns();
             
@@ -134,17 +153,23 @@ async function handleCommand(chatId, text) {
                 return;
             }
 
-            // SAFETY LOCK: Only process the first 15 tasks so Telegram doesn't block the message
+            // SAFETY LOCK: Only process the first 15 tasks to prevent Telegram crashes
             const displayTasks = activeTasks.slice(0, 15);
-            let reportMessage = `✅ *Active Tasks Found (${activeTasks.length}):*\n\n`;
+            let reportMessage = `✅ *Active Ongoing Tasks Found (${activeTasks.length}):*\n\n`;
             
             for (const task of displayTasks) {
                 const taskTitle = task.title || task.name || task.taskCategory || 'Untitled Task';
-                reportMessage += `📌 *${taskTitle}*\n🆔 \`${task.id || 'N/A'}\`\n\n`;
+                const due = task.endTime || task.end_time || task.dueDate || task.deadline || 'Time Not Specified';
+                const taskType = task.maxContent ? `Max Content: ${task.maxContent}` : (task.fcfs ? 'FCFS' : 'Open Task');
+
+                reportMessage += `📌 *Title:* ${taskTitle}\n`;
+                reportMessage += `🆔 *ID:* \`${task.id || 'N/A'}\`\n`;
+                reportMessage += `⏳ *Ends:* ${due}\n`;
+                reportMessage += `⚡ *Type:* ${taskType}\n\n`;
             }
             
             if (activeTasks.length > 15) {
-                reportMessage += `*(...and ${activeTasks.length - 15} more older tasks hidden to save space)*\n\n`;
+                reportMessage += `*(...and ${activeTasks.length - 15} more hidden to save space)*\n\n`;
             }
 
             reportMessage += `🔗 [Access Builder Hub](https://www.bitgetbuilder.com/)`;
