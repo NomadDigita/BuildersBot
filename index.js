@@ -1,10 +1,16 @@
 require('dotenv').config();
-const fetch = require('node-fetch');
 const express = require('express');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const CHAT_IDS = process.env.CHAT_ID ? process.env.CHAT_ID.split(',') : [];
+// Pre-trim all IDs to avoid whitespace issues
+const CHAT_IDS = process.env.CHAT_ID ? process.env.CHAT_ID.split(',').map(id => id.trim()) : [];
 const PORT = process.env.PORT || 3000;
+
+// Validate critical environmental keys at startup
+if (!TELEGRAM_TOKEN) {
+    console.error("CRITICAL ERROR: TELEGRAM_TOKEN is missing from your .env file.");
+    process.exit(1);
+}
 
 const CHECK_INTERVAL = 1 * 60 * 1000; 
 
@@ -12,25 +18,38 @@ let offset = 0;
 let seenTasks = new Set(); 
 let isFirstBoot = true;    
 
+// HTML Escape helper to prevent Telegram parsing engine crashes
+function escapeHTML(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
 // 1. Initialize Render Health Check Server
 const app = express();
 app.get('/', (req, res) => res.send('BuildersWatcherBot is online.'));
 app.listen(PORT, () => console.log(`Health check server listening on port ${PORT}`));
 
-// 2. Telegram Message Engine
+// 2. Telegram Message Engine (HTML Parse Mode)
 async function sendMessage(chatId, text) {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
     try {
-        await fetch(url, {
+        const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 chat_id: chatId,
                 text: text,
-                parse_mode: 'Markdown',
+                parse_mode: 'HTML',
                 disable_web_page_preview: true
             })
         });
+        
+        if (!response.ok) {
+            const errBody = await response.json();
+            console.error(`Telegram API Error for Chat ${chatId}:`, errBody);
+        }
     } catch (err) {
         console.error(`Failed to send message to ${chatId}:`, err.message);
     }
@@ -73,7 +92,7 @@ async function fetchCampaigns() {
             return false;
         }
 
-        // RULE 3: THE EXPLICIT BLACKLIST (Kills specific targeted noise)
+        // RULE 3: THE EXPLICIT BLACKLIST
         const titleStr = String(task.title || task.name || '').toLowerCase();
         const teamStr = String(task.team || task.taskCategory || '').toLowerCase().trim();
         const taskStr = JSON.stringify(task).toLowerCase();
@@ -88,7 +107,6 @@ async function fetchCampaigns() {
         }
 
         // RULE 4: THE STRICT PUBLIC WHITELIST
-        // Task must explicitly contain core, trainee, vip, everyone, or be completely blank.
         const isPublic = teamStr === '' || 
                          teamStr === 'none' || 
                          teamStr === 'null' || 
@@ -98,7 +116,6 @@ async function fetchCampaigns() {
                          teamStr.includes('everyone') || 
                          teamStr.includes('open');
 
-        // If it doesn't match any of the open tags above, kill it.
         if (!isPublic) {
             return false; 
         }
@@ -125,15 +142,15 @@ async function scanTasksAutomatic() {
                     const due = task.endTime || task.end_time || task.dueDate || task.deadline || 'Time Not Specified';
                     const taskType = task.maxContent ? `Max Content: ${task.maxContent}` : (task.fcfs ? 'FCFS' : 'Open Task');
 
-                    const message = `🚨 *NEW ONGOING TASK* 🚨\n\n` +
-                                    `📌 *Title:* ${taskTitle}\n` +
-                                    `🆔 *ID:* \`${task.id}\`\n` +
-                                    `⏳ *Ends:* ${due}\n` +
-                                    `⚡ *Type:* ${taskType}\n\n` +
-                                    `🔗 [Execute on Builder Hub](https://www.bitgetbuilder.com/)`;
+                    const message = `🚨 <b>NEW ONGOING TASK</b> 🚨\n\n` +
+                                    `📌 <b>Title:</b> ${escapeHTML(taskTitle)}\n` +
+                                    `🆔 <b>ID:</b> <code>${task.id}</code>\n` +
+                                    `⏳ <b>Ends:</b> ${escapeHTML(due)}\n` +
+                                    `⚡ <b>Type:</b> ${escapeHTML(taskType)}\n\n` +
+                                    `🔗 <a href="https://www.bitgetbuilder.com/">Execute on Builder Hub</a>`;
 
                     for (const chatId of CHAT_IDS) {
-                        await sendMessage(chatId.trim(), message);
+                        await sendMessage(chatId, message);
                     }
                 }
             }
@@ -156,12 +173,12 @@ async function handleCommand(chatId, text) {
     const cleanText = text.trim().toLowerCase();
 
     if (cleanText === '/start') {
-        const startMenu = `⚡ *BuildersWatcherBot* ⚡\n\n` +
-                          `I am built for scanning for new tasks on the [Bitget Builder Hub](https://www.bitgetbuilder.com/) to give immediate, quick, and sharp notice to connected builders.\n\n` +
-                          `⚙️ *System Settings:*\n` +
-                          `⏱️ *Auto Scan:* Every 1 minute\n` +
-                          `🧹 *Data Filter:* Active (Ended & private tasks removed, open tasks only)\n\n` +
-                          `🛠️ *Commands:*\n` +
+        const startMenu = `⚡ <b>BuildersWatcherBot</b> ⚡\n\n` +
+                          `I am built for scanning for new tasks on the <a href="https://www.bitgetbuilder.com/">Bitget Builder Hub</a> to give immediate, quick, and sharp notice to connected builders.\n\n` +
+                          `⚙️ <b>System Settings:</b>\n` +
+                          `⏱️ <b>Auto Scan:</b> Every 1 minute\n` +
+                          `🧹 <b>Data Filter:</b> Active (Ended & private tasks removed, open tasks only)\n\n` +
+                          `🛠️ <b>Commands:</b>\n` +
                           `🔹 /start - View this setup menu and bot capabilities.\n` +
                           `🔹 /scan - Force an immediate manual check for live tasks.`;
                             
@@ -169,45 +186,45 @@ async function handleCommand(chatId, text) {
     } 
     
     else if (cleanText === '/scan') {
-        await sendMessage(chatId, `🔍 *Scanning for ONGOING tasks only...*`);
+        await sendMessage(chatId, `🔍 <b>Scanning for ONGOING tasks only...</b>`);
         try {
             const activeTasks = await fetchCampaigns();
             
             if (activeTasks.length === 0) {
-                await sendMessage(chatId, `⏸️ *Status:* Radar is clear. No active tasks available.`);
+                await sendMessage(chatId, `⏸️ <b>Status:</b> Radar is clear. No active tasks available.`);
                 return;
             }
 
             // SAFETY LOCK: Only process the first 15 tasks to prevent Telegram crashes
             const displayTasks = activeTasks.slice(0, 15);
-            let reportMessage = `✅ *Active Ongoing Tasks Found (${activeTasks.length}):*\n\n`;
+            let reportMessage = `✅ <b>Active Ongoing Tasks Found (${activeTasks.length}):</b>\n\n`;
             
             for (const task of displayTasks) {
                 const taskTitle = task.title || task.name || task.taskCategory || 'Untitled Task';
                 const due = task.endTime || task.end_time || task.dueDate || task.deadline || 'Time Not Specified';
                 const taskType = task.maxContent ? `Max Content: ${task.maxContent}` : (task.fcfs ? 'FCFS' : 'Open Task');
 
-                reportMessage += `📌 *Title:* ${taskTitle}\n`;
-                reportMessage += `🆔 *ID:* \`${task.id || 'N/A'}\`\n`;
-                reportMessage += `⏳ *Ends:* ${due}\n`;
-                reportMessage += `⚡ *Type:* ${taskType}\n\n`;
+                reportMessage += `📌 <b>Title:</b> ${escapeHTML(taskTitle)}\n`;
+                reportMessage += `🆔 <b>ID:</b> <code>${task.id || 'N/A'}</code>\n`;
+                reportMessage += `⏳ <b>Ends:</b> ${escapeHTML(due)}\n`;
+                reportMessage += `⚡ <b>Type:</b> ${escapeHTML(taskType)}\n\n`;
             }
             
             if (activeTasks.length > 15) {
-                reportMessage += `*(...and ${activeTasks.length - 15} more hidden to save space)*\n\n`;
+                reportMessage += `<i>(...and ${activeTasks.length - 15} more hidden to save space)</i>\n\n`;
             }
 
-            reportMessage += `🔗 [Access Builder Hub](https://www.bitgetbuilder.com/)`;
+            reportMessage += `🔗 <a href="https://www.bitgetbuilder.com/">Access Builder Hub</a>`;
             
             await sendMessage(chatId, reportMessage);
 
         } catch (error) {
-            await sendMessage(chatId, `❌ *Query Error:* ${error.message}`);
+            await sendMessage(chatId, `❌ <b>Query Error:</b> ${escapeHTML(error.message)}`);
         }
     }
 }
 
-// 6. Long Polling Command Listener
+// 6. Long Polling Command Listener (with Unauthorized Chat ID diagnostics)
 async function listenForCommands() {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates?offset=${offset}&timeout=30`;
     try {
@@ -220,8 +237,12 @@ async function listenForCommands() {
                 offset = update.update_id + 1; 
                 if (update.message && update.message.text) {
                     const chatId = update.message.chat.id.toString();
-                    if (CHAT_IDS.map(id => id.trim()).includes(chatId)) {
+                    
+                    if (CHAT_IDS.includes(chatId)) {
                         await handleCommand(chatId, update.message.text);
+                    } else {
+                        // Diagnostic log: helps you find your Chat ID if it isn't in .env yet
+                        console.log(`[Diagnostic] Unauthorized Chat ID tried talking to bot. Chat ID: "${chatId}" | Text: "${update.message.text}"`);
                     }
                 }
             }
