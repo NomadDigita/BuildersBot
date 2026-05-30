@@ -2,15 +2,11 @@ require('dotenv').config();
 const express = require('express');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-// Pre-trim all IDs to avoid whitespace issues
 const CHAT_IDS = process.env.CHAT_ID ? process.env.CHAT_ID.split(',').map(id => id.trim()) : [];
 const PORT = process.env.PORT || 3000;
 
-// Validate critical environmental keys at startup
-if (!TELEGRAM_TOKEN) {
-    console.error("CRITICAL ERROR: TELEGRAM_TOKEN is missing from your .env file.");
-    process.exit(1);
-}
+// ADD YOUR SESSION COOKIE OR AUTH TOKEN HERE IF NEEDED
+const SESSION_COOKIE = process.env.SESSION_COOKIE || ''; 
 
 const CHECK_INTERVAL = 1 * 60 * 1000; 
 
@@ -18,7 +14,6 @@ let offset = 0;
 let seenTasks = new Set(); 
 let isFirstBoot = true;    
 
-// HTML Escape helper to prevent Telegram parsing engine crashes
 function escapeHTML(str) {
     return String(str)
         .replace(/&/g, '&amp;')
@@ -26,12 +21,10 @@ function escapeHTML(str) {
         .replace(/>/g, '&gt;');
 }
 
-// 1. Initialize Render Health Check Server
 const app = express();
 app.get('/', (req, res) => res.send('BuildersWatcherBot is online.'));
 app.listen(PORT, () => console.log(`Health check server listening on port ${PORT}`));
 
-// 2. Telegram Message Engine (HTML Parse Mode)
 async function sendMessage(chatId, text) {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
     try {
@@ -45,32 +38,47 @@ async function sendMessage(chatId, text) {
                 disable_web_page_preview: true
             })
         });
-        
         if (!response.ok) {
-            const errBody = await response.json();
-            console.error(`Telegram API Error for Chat ${chatId}:`, errBody);
+            const errData = await response.json();
+            console.error(`Telegram API Error:`, errData);
         }
     } catch (err) {
         console.error(`Failed to send message to ${chatId}:`, err.message);
     }
 }
 
-// 3. Filtered & Sorted Bitget API Fetcher
+// Updated fetchCampaigns with Diagnostic logs
 async function fetchCampaigns() {
+    const headers = {
+        "accept": "application/json, text/plain, */*",
+        "accept-language": "en-US,en;q=0.9",
+        "Referer": "https://www.bitgetbuilder.com/"
+    };
+
+    // Attach cookie if you retrieved it from your browser DevTools
+    if (SESSION_COOKIE) {
+        headers["cookie"] = SESSION_COOKIE;
+    }
+
     const response = await fetch("https://api.bitgetbuilder.com/server/campaigns", {
-        "headers": {
-            "accept": "application/json, text/plain, */*",
-            "accept-language": "en-US,en;q=0.9",
-            "Referer": "https://www.bitgetbuilder.com/"
-        },
+        "headers": headers,
         "method": "GET"
     });
+    
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     const data = await response.json();
     
     let allTasks = Array.isArray(data.campaigns) ? data.campaigns : (Array.isArray(data) ? data : []);
     
-    // Sort by ID descending (newest at the top)
+    // DIAGNOSTIC LOG 1: Check if API returned any tasks at all
+    console.log(`[Diagnostic] Raw API Campaign Count: ${allTasks.length}`);
+    if (allTasks.length > 0) {
+        console.log(`[Diagnostic] First Task Raw Sample:`, JSON.stringify(allTasks[0]));
+    } else {
+        console.log(`[Diagnostic] API returned 0 tasks. You must grab your Cookie/Auth header from your browser DevTools and add it to your request headers.`);
+    }
+
+    // Sort by ID descending
     allTasks.sort((a, b) => {
         const idA = parseInt(String(a.id).replace(/\D/g, '')) || 0;
         const idB = parseInt(String(b.id).replace(/\D/g, '')) || 0;
@@ -78,31 +86,37 @@ async function fetchCampaigns() {
     });
 
     return allTasks.filter(task => {
+        const taskId = task.id || 'Unknown';
+
         // RULE 1: Time Check
         const dueStr = task.endTime || task.end_time || task.dueDate || task.deadline || task.due;
         if (dueStr) {
             const cleanDateStr = String(dueStr).replace(/\(GMT[+-]\d+\)/i, '').trim();
             const endMs = new Date(cleanDateStr).getTime();
-            if (!isNaN(endMs) && endMs < Date.now()) return false; 
+            if (!isNaN(endMs) && endMs < Date.now()) {
+                console.log(`[Diagnostic] Task ${taskId} filtered out: Ended (Time past)`);
+                return false; 
+            }
         }
 
         // RULE 2: Status Check
         const statusStr = String(task.status || task.state || task.taskStatus || '').toLowerCase();
         if (statusStr === 'ended' || statusStr === 'completed') {
+            console.log(`[Diagnostic] Task ${taskId} filtered out: Status is ${statusStr}`);
             return false;
         }
 
         // RULE 3: THE EXPLICIT BLACKLIST
         const titleStr = String(task.title || task.name || '').toLowerCase();
         const teamStr = String(task.team || task.taskCategory || '').toLowerCase().trim();
-        const taskStr = JSON.stringify(task).toLowerCase();
 
+        // FIX: Replaced broad JSON string search with target field searches to avoid false positives
         if (titleStr.includes('(cmc)') || 
             titleStr.includes('winner') || 
             titleStr.includes('reddit') || 
             teamStr.includes('target') || 
-            taskStr.includes('"target team"') || 
-            taskStr.includes('private')) {
+            teamStr.includes('private')) {
+            console.log(`[Diagnostic] Task ${taskId} filtered out: Hit explicit blacklist`);
             return false; 
         }
 
@@ -117,14 +131,15 @@ async function fetchCampaigns() {
                          teamStr.includes('open');
 
         if (!isPublic) {
+            console.log(`[Diagnostic] Task ${taskId} filtered out: Not in whitelist categories (Team: ${teamStr})`);
             return false; 
         }
 
+        console.log(`[Diagnostic] Task ${taskId} (${titleStr}) PASSED all filters.`);
         return true; 
     });
 }
 
-// 4. Autonomous 1-Minute Scanner
 async function scanTasksAutomatic() {
     console.log(`[${new Date().toLocaleTimeString()}] Running automated node scan...`);
     try {
@@ -168,18 +183,17 @@ async function scanTasksAutomatic() {
     }
 }
 
-// 5. Interactive Command Terminal
 async function handleCommand(chatId, text) {
     const cleanText = text.trim().toLowerCase();
 
     if (cleanText === '/start') {
         const startMenu = `⚡ <b>BuildersWatcherBot</b> ⚡\n\n` +
-                          `I am built for scanning for new tasks on the <a href="https://www.bitgetbuilder.com/">Bitget Builder Hub</a> to give immediate, quick, and sharp notice to connected builders.\n\n` +
+                          `I am built for scanning for new tasks on the <a href="https://www.bitgetbuilder.com/">Bitget Builder Hub</a> to give immediate notice to connected builders.\n\n` +
                           `⚙️ <b>System Settings:</b>\n` +
                           `⏱️ <b>Auto Scan:</b> Every 1 minute\n` +
                           `🧹 <b>Data Filter:</b> Active (Ended & private tasks removed, open tasks only)\n\n` +
                           `🛠️ <b>Commands:</b>\n` +
-                          `🔹 /start - View this setup menu and bot capabilities.\n` +
+                          `🔹 /start - View this setup menu.\n` +
                           `🔹 /scan - Force an immediate manual check for live tasks.`;
                             
         await sendMessage(chatId, startMenu);
@@ -195,7 +209,6 @@ async function handleCommand(chatId, text) {
                 return;
             }
 
-            // SAFETY LOCK: Only process the first 15 tasks to prevent Telegram crashes
             const displayTasks = activeTasks.slice(0, 15);
             let reportMessage = `✅ <b>Active Ongoing Tasks Found (${activeTasks.length}):</b>\n\n`;
             
@@ -215,7 +228,6 @@ async function handleCommand(chatId, text) {
             }
 
             reportMessage += `🔗 <a href="https://www.bitgetbuilder.com/">Access Builder Hub</a>`;
-            
             await sendMessage(chatId, reportMessage);
 
         } catch (error) {
@@ -224,7 +236,6 @@ async function handleCommand(chatId, text) {
     }
 }
 
-// 6. Long Polling Command Listener (with Unauthorized Chat ID diagnostics)
 async function listenForCommands() {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates?offset=${offset}&timeout=30`;
     try {
@@ -237,12 +248,10 @@ async function listenForCommands() {
                 offset = update.update_id + 1; 
                 if (update.message && update.message.text) {
                     const chatId = update.message.chat.id.toString();
-                    
                     if (CHAT_IDS.includes(chatId)) {
                         await handleCommand(chatId, update.message.text);
                     } else {
-                        // Diagnostic log: helps you find your Chat ID if it isn't in .env yet
-                        console.log(`[Diagnostic] Unauthorized Chat ID tried talking to bot. Chat ID: "${chatId}" | Text: "${update.message.text}"`);
+                        console.log(`[Diagnostic] Unauthorized Chat ID tried talking to bot: "${chatId}"`);
                     }
                 }
             }
@@ -253,7 +262,6 @@ async function listenForCommands() {
     setTimeout(listenForCommands, 500);
 }
 
-// Boot Sequence Initialization
 scanTasksAutomatic();              
 setInterval(scanTasksAutomatic, CHECK_INTERVAL); 
 listenForCommands();
