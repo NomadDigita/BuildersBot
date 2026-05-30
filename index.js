@@ -59,12 +59,9 @@ async function fetchCampaigns() {
     });
 
     return allTasks.filter(task => {
-        const taskStr = JSON.stringify(task).toLowerCase();
-
-        // RULE 1: Clean Time Check
+        // RULE 1: Time Check
         const dueStr = task.endTime || task.end_time || task.dueDate || task.deadline || task.due;
         if (dueStr) {
-            // Strip out timezone strings like (GMT+8) that break date parsing
             const cleanDateStr = dueStr.replace(/\(GMT[+-]\d+\)/i, '').trim();
             const endMs = new Date(cleanDateStr).getTime();
             if (!isNaN(endMs) && endMs < Date.now()) return false; 
@@ -76,34 +73,40 @@ async function fetchCampaigns() {
             return false;
         }
 
-        // RULE 3: THE STRICT BLACKLIST (Must run BEFORE the whitelist)
-        // If it has specific UID arrays, it's a targeted task for specific people. Block it instantly.
-        if (Array.isArray(task.uids) && task.uids.length > 0) return false;
-        if (Array.isArray(task.targetUids) && task.targetUids.length > 0) return false;
+        const teamStr = String(task.team || task.taskCategory || '').toLowerCase();
 
-        // If explicitly labeled private or target team. Block it.
-        if (taskStr.includes('target team') || taskStr.includes('private')) {
+        // RULE 3: THE GOLDEN WHITELIST (Guaranteed Survival)
+        // If it is explicitly for one of these public groups, it survives immediately.
+        if (teamStr.includes('core builder') || 
+            teamStr.includes('trainee') || 
+            teamStr.includes('vip') || 
+            teamStr.includes('everyone')) {
+            return true; 
+        }
+
+        // RULE 4: THE STRICT BLACKLIST
+        const taskStr = JSON.stringify(task).toLowerCase();
+        const titleStr = String(task.title || task.name || '').toLowerCase();
+
+        // Kill explicitly targeted/private keywords
+        if (taskStr.includes('"target team"') || 
+            taskStr.includes('private') || 
+            titleStr.includes('winner') || 
+            titleStr.includes('(cmc)')) {
             return false; 
         }
-
-        // RULE 4: THE GOLDEN WHITELIST
-        const teamStr = String(task.team || task.taskCategory || '').toLowerCase();
         
-        // Allowed keywords that signify the task is open to general builder groups
-        const isPublicGroup = teamStr === '' || 
-                              teamStr === 'none' ||
-                              teamStr === 'null' ||
-                              teamStr.includes('core') || 
-                              teamStr.includes('trainee') || 
-                              teamStr.includes('vip') || 
-                              teamStr.includes('everyone');
+        // Kill tasks restricted to specific UIDs or assignees
+        if (Array.isArray(task.uids) && task.uids.length > 0) return false;
+        if (Array.isArray(task.targetUids) && task.targetUids.length > 0) return false;
+        if (Array.isArray(task.assignees) && task.assignees.length > 0) return false;
 
-        // If the team/category is NOT one of those public groups, block it.
-        if (!isPublicGroup) {
-            return false;
+        // RULE 5: DEFAULT OPEN TASKS
+        if (teamStr === '' || teamStr === 'none' || teamStr === 'null' || teamStr.includes('open')) {
+            return true;
         }
 
-        return true; 
+        return false; 
     });
 }
 
