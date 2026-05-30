@@ -15,7 +15,7 @@ let isFirstBoot = true;    // Stealth boot state
 
 // 1. Initialize Render Health Check Server
 const app = express();
-app.get('/', (req, res) => res.send('Builders Watcher OS is online.'));
+app.get('/', (req, res) => res.send('Builders Watcher OS by @asiwajubtc is online.'));
 app.listen(PORT, () => console.log(`Health check server listening on port ${PORT}`));
 
 // 2. Telegram Message Engine
@@ -52,10 +52,10 @@ async function fetchCampaigns() {
     
     let allTasks = Array.isArray(data.campaigns) ? data.campaigns : (Array.isArray(data) ? data : []);
     
-    // STRICT FILTER: Keep only live/ongoing tasks. Ignore ended, completed, or submitted ones.
+    // STRICT FILTER: Keep only live/ongoing tasks. Ignore ended, completed, submitted, or expired ones.
     return allTasks.filter(task => {
-        const status = (task.status || '').toLowerCase();
-        return status !== 'ended' && status !== 'submitted' && status !== 'completed';
+        const status = String(task.status || task.state || task.taskStatus || '').toLowerCase();
+        return status !== 'ended' && status !== 'submitted' && status !== 'completed' && status !== 'expired';
     });
 }
 
@@ -111,6 +111,7 @@ async function handleCommand(chatId, text) {
     if (cleanText === '/start') {
         const premiumMenu = `💎 *Builders Watcher OS | Elite Edition* 💎\n\n` +
                             `*System Status:* ONLINE 🟢\n` +
+                            `*Authorized Commander:* Asiwaju (@asiwajubtc)\n\n` +
                             `High-frequency architectural node actively monitoring the Bitget Builder Hub for tier-1 opportunities.\n\n` +
                             `⚙️ *System Specifications:*\n` +
                             `⏱️ *Ping Rate:* 60,000ms (1 Minute)\n` +
@@ -133,11 +134,19 @@ async function handleCommand(chatId, text) {
                 return;
             }
 
+            // SAFETY LOCK: Only process the first 15 tasks so Telegram doesn't block the message
+            const displayTasks = activeTasks.slice(0, 15);
             let reportMessage = `✅ *Active Tasks Found (${activeTasks.length}):*\n\n`;
-            for (const task of activeTasks) {
+            
+            for (const task of displayTasks) {
                 const taskTitle = task.title || task.name || task.taskCategory || 'Untitled Task';
                 reportMessage += `📌 *${taskTitle}*\n🆔 \`${task.id || 'N/A'}\`\n\n`;
             }
+            
+            if (activeTasks.length > 15) {
+                reportMessage += `*(...and ${activeTasks.length - 15} more older tasks hidden to save space)*\n\n`;
+            }
+
             reportMessage += `🔗 [Access Builder Hub](https://www.bitgetbuilder.com/)`;
             
             await sendMessage(chatId, reportMessage);
