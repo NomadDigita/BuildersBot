@@ -51,24 +51,24 @@ async function fetchCampaigns() {
     
     let allTasks = Array.isArray(data.campaigns) ? data.campaigns : (Array.isArray(data) ? data : []);
     
-    // FIX 1: Sort by ID descending so the newest tasks (e.g. 1094) are always at the top!
+    // Sort by ID descending (newest at the top)
     allTasks.sort((a, b) => {
         const idA = parseInt(String(a.id).replace(/\D/g, '')) || 0;
         const idB = parseInt(String(b.id).replace(/\D/g, '')) || 0;
         return idB - idA;
     });
 
-    // FIX 2: Deep filter to kill old tasks based on time and status codes
     return allTasks.filter(task => {
-        // Check if the due date has already passed
+        // RULE 1: Kill tasks where the due date has passed
         const dueStr = task.endTime || task.end_time || task.dueDate || task.deadline || task.due;
         if (dueStr) {
             const endMs = new Date(dueStr).getTime();
-            if (endMs < Date.now()) return false; // Time is up, kill it
+            if (endMs < Date.now()) return false; 
         }
 
-        // Check if Bitget marked it as dead using numbers (2, 3) or strings
         const str = JSON.stringify(task).toLowerCase();
+        
+        // RULE 2: Kill tasks marked as ended or submitted
         if (str.includes('"status":2') || 
             str.includes('"status":3') || 
             str.includes('"state":2') || 
@@ -77,7 +77,18 @@ async function fetchCampaigns() {
             return false;
         }
 
-        return true; 
+        // RULE 3: PUBLIC ONLY FILTER - Kill tasks assigned to specific people or target teams
+        const category = String(task.taskCategory || task.team || '').toLowerCase();
+        if (category.includes('target') || category.includes('private')) {
+            return false; // Kills "Target Team" private tasks
+        }
+        
+        // If the API attaches a specific UID list to the task, it's not open for everyone. Kill it.
+        if (Array.isArray(task.uids) && task.uids.length > 0) return false;
+        if (Array.isArray(task.targetUids) && task.targetUids.length > 0) return false;
+        if (Array.isArray(task.assignees) && task.assignees.length > 0) return false;
+
+        return true; // Only fully public, active tasks survive
     });
 }
 
@@ -114,7 +125,7 @@ async function scanTasksAutomatic() {
         }
 
         if (isFirstBoot) {
-            console.log(`Stealth boot complete. Memorized ${seenTasks.size} active tasks.`);
+            console.log(`Stealth boot complete. Memorized ${seenTasks.size} public active tasks.`);
             isFirstBoot = false; 
         } else if (!foundNewTask) {
             console.log('No new tasks found this cycle.');
@@ -130,13 +141,14 @@ async function handleCommand(chatId, text) {
     const cleanText = text.trim().toLowerCase();
 
     if (cleanText === '/start') {
-        const premiumMenu = `💎 *Builders Watcher OS | Elite Edition* 💎\n\n` +
-                            `*System Status:* ONLINE 🟢\n` +
-                            `*Commander:* Asiwaju (@asiwajubtc)\n\n` +
-                            `⚙️ *System Specifications:*\n` +
-                            `⏱️ *Ping Rate:* 1 Minute\n` +
-                            `🧹 *Data Filter:* Active (Ended tasks destroyed)\n\n` +
-                            `🛠️ *Available Directives:*\n` +
+        // EXACT MENU RESTORED
+        const premiumMenu = `💎 Builders Watcher OS | Elite Edition 💎\n\n` +
+                            `System Status: ONLINE 🟢\n` +
+                            `Commander: Asiwaju (@asiwajubtc)\n\n` +
+                            `⚙️ System Specifications:\n` +
+                            `⏱️ Ping Rate: 1 Minute\n` +
+                            `🧹 Data Filter: Active (Ended tasks destroyed)\n\n` +
+                            `🛠️ Available Directives:\n` +
                             `🔹 /start - Launch OS Interface\n` +
                             `🔹 /scan - Request real-time index of live tasks`;
                             
@@ -153,7 +165,6 @@ async function handleCommand(chatId, text) {
                 return;
             }
 
-            // SAFETY LOCK: Only process the first 15 tasks to prevent Telegram crashes
             const displayTasks = activeTasks.slice(0, 15);
             let reportMessage = `✅ *Active Ongoing Tasks Found (${activeTasks.length}):*\n\n`;
             
