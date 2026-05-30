@@ -14,7 +14,7 @@ let isFirstBoot = true;
 
 // 1. Initialize Render Health Check Server
 const app = express();
-app.get('/', (req, res) => res.send('Builders Watcher OS by @asiwajubtc is online.'));
+app.get('/', (req, res) => res.send('BuildersWatcherBot is online.'));
 app.listen(PORT, () => console.log(`Health check server listening on port ${PORT}`));
 
 // 2. Telegram Message Engine
@@ -77,18 +77,14 @@ async function fetchCampaigns() {
             return false;
         }
 
-        // RULE 3: PUBLIC ONLY FILTER - Kill tasks assigned to specific people or target teams
+        // RULE 3: PUBLIC ONLY FILTER
+        // Strictly filter by "target" or "private" tags. (Core Builder & Trainee are safe!)
         const category = String(task.taskCategory || task.team || '').toLowerCase();
         if (category.includes('target') || category.includes('private')) {
-            return false; // Kills "Target Team" private tasks
+            return false; 
         }
         
-        // If the API attaches a specific UID list to the task, it's not open for everyone. Kill it.
-        if (Array.isArray(task.uids) && task.uids.length > 0) return false;
-        if (Array.isArray(task.targetUids) && task.targetUids.length > 0) return false;
-        if (Array.isArray(task.assignees) && task.assignees.length > 0) return false;
-
-        return true; // Only fully public, active tasks survive
+        return true; 
     });
 }
 
@@ -125,7 +121,7 @@ async function scanTasksAutomatic() {
         }
 
         if (isFirstBoot) {
-            console.log(`Stealth boot complete. Memorized ${seenTasks.size} public active tasks.`);
+            console.log(`Stealth boot complete. Memorized ${seenTasks.size} active tasks.`);
             isFirstBoot = false; 
         } else if (!foundNewTask) {
             console.log('No new tasks found this cycle.');
@@ -141,18 +137,17 @@ async function handleCommand(chatId, text) {
     const cleanText = text.trim().toLowerCase();
 
     if (cleanText === '/start') {
-        // EXACT MENU RESTORED
-        const premiumMenu = `💎 Builders Watcher OS | Elite Edition 💎\n\n` +
-                            `System Status: ONLINE 🟢\n` +
-                            `Commander: Asiwaju (@asiwajubtc)\n\n` +
-                            `⚙️ System Specifications:\n` +
-                            `⏱️ Ping Rate: 1 Minute\n` +
-                            `🧹 Data Filter: Active (Ended tasks destroyed)\n\n` +
-                            `🛠️ Available Directives:\n` +
-                            `🔹 /start - Launch OS Interface\n` +
-                            `🔹 /scan - Request real-time index of live tasks`;
+        const startMenu = `⚡ *BuildersWatcherBot* ⚡\n\n` +
+                          `I am built for scanning for new tasks on the [Bitget Builder Hub](https://www.bitgetbuilder.com/) to give immediate, quick, and sharp notice to connected builders.\n\n` +
+                          `⚙️ *System Settings:*\n` +
+                          `⏱️ *Auto Scan:* Every 1 minute\n` +
+                          `🧹 *Data Filter:* Active (Ended & private tasks removed, open tasks only)\n\n` +
+                          `🛠️ *Commands:*\n` +
+                          `🔹 /start - View this setup menu and bot capabilities.\n` +
+                          `🔹 /scan - Force an immediate manual check for live tasks.\n\n` +
+                          `— @Asiwaju`;
                             
-        await sendMessage(chatId, premiumMenu);
+        await sendMessage(chatId, startMenu);
     } 
     
     else if (cleanText === '/scan') {
@@ -165,6 +160,7 @@ async function handleCommand(chatId, text) {
                 return;
             }
 
+            // SAFETY LOCK: Only process the first 15 tasks to prevent Telegram crashes
             const displayTasks = activeTasks.slice(0, 15);
             let reportMessage = `✅ *Active Ongoing Tasks Found (${activeTasks.length}):*\n\n`;
             
