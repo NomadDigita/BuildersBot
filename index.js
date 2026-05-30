@@ -59,35 +59,44 @@ async function fetchCampaigns() {
     });
 
     return allTasks.filter(task => {
-        // RULE 1: Kill tasks where the due date has passed
+        const taskStr = JSON.stringify(task).toLowerCase();
+
+        // RULE 1: Clean Time Check
         const dueStr = task.endTime || task.end_time || task.dueDate || task.deadline || task.due;
         if (dueStr) {
-            const endMs = new Date(dueStr).getTime();
-            if (endMs < Date.now()) return false; 
+            // Strip out timezone strings like (GMT+8) that break date parsing
+            const cleanDateStr = dueStr.replace(/\(GMT[+-]\d+\)/i, '').trim();
+            const endMs = new Date(cleanDateStr).getTime();
+            if (!isNaN(endMs) && endMs < Date.now()) return false; 
         }
 
-        // RULE 2: Kill tasks explicitly marked as ended
+        // RULE 2: Status Check
         const statusStr = String(task.status || task.state || task.taskStatus || '').toLowerCase();
         if (statusStr === 'ended' || statusStr === 'completed' || statusStr === '2' || statusStr === '3') {
             return false;
         }
 
-        // RULE 3: STRICT PUBLIC WHITELIST
-        const teamStr = String(task.team || task.taskCategory || '').toLowerCase();
-        
-        // Allowed keywords that signify the task is open to general builder groups
-        const isPublicGroup = teamStr === '' || 
-                              teamStr === 'none' ||
-                              teamStr === 'null' ||
-                              teamStr.includes('core') || 
-                              teamStr.includes('trainee') || 
-                              teamStr.includes('vip') || 
-                              teamStr.includes('everyone');
-
-        // If the team/category is NOT one of those public groups (e.g. it's a specific name, UID, or "Target Team"), block it.
-        if (!isPublicGroup) {
-            return false;
+        // RULE 3: THE GOLDEN WHITELIST
+        // If the task explicitly mentions public groups, it is an open task. Allow it immediately.
+        const isPublicGroup = taskStr.includes('core builder') || 
+                              taskStr.includes('trainee') || 
+                              taskStr.includes('vip') || 
+                              taskStr.includes('everyone') ||
+                              taskStr.includes('open task');
+                              
+        if (isPublicGroup) {
+            return true; 
         }
+
+        // RULE 4: THE STRICT BLACKLIST
+        // If it didn't pass the whitelist above, check if it's restricted to specific people.
+        if (taskStr.includes('target team') || taskStr.includes('private')) {
+            return false; 
+        }
+        
+        // If it has specific UID arrays, it's a targeted task. Block it.
+        if (Array.isArray(task.uids) && task.uids.length > 0) return false;
+        if (Array.isArray(task.targetUids) && task.targetUids.length > 0) return false;
 
         return true; 
     });
@@ -126,7 +135,7 @@ async function scanTasksAutomatic() {
         }
 
         if (isFirstBoot) {
-            console.log(`Stealth boot complete. Memorized ${seenTasks.size} active tasks.`);
+            console.log(`Stealth boot complete. Memorized ${seenTasks.size} active open tasks.`);
             isFirstBoot = false; 
         } else if (!foundNewTask) {
             console.log('No new tasks found this cycle.');
