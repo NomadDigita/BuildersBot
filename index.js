@@ -1,4 +1,5 @@
 require('dotenv').config();
+const fetch = require('node-fetch'); // Restored to prevent "fetch is not defined" crashes
 const express = require('express');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -7,6 +8,10 @@ const PORT = process.env.PORT || 3000;
 
 // Configurable Task Filter: 'automatic', 'manual', or 'both'
 const TASK_CHECK_TYPE = (process.env.TASK_CHECK_TYPE || 'both').toLowerCase().trim();
+
+// Setup headers for login session (Render environment variables)
+const SESSION_COOKIE = process.env.SESSION_COOKIE || '';
+const AUTHORIZATION_HEADER = process.env.AUTHORIZATION || '';
 
 if (!TELEGRAM_TOKEN) {
     console.error("CRITICAL ERROR: TELEGRAM_TOKEN is missing from your .env file.");
@@ -19,7 +24,6 @@ let offset = 0;
 let seenTasks = new Set(); 
 let isFirstBoot = true;    
 
-// HTML Escape helper to prevent Telegram parsing engine crashes
 function escapeHTML(str) {
     return String(str)
         .replace(/&/g, '&amp;')
@@ -55,7 +59,7 @@ async function sendMessage(chatId, text) {
     }
 }
 
-// Helper to determine if a task is limited to specific UIDs
+// UID Checker
 function hasSpecificUIDs(task) {
     const uidKeys = [
         'uid', 'uids', 'uidlist', 'uid_list', 'targetuids', 'target_uids',
@@ -69,28 +73,13 @@ function hasSpecificUIDs(task) {
         
         if (uidKeys.some(uKey => lowerKey.includes(uKey))) {
             const val = task[key];
-            
-            // Discard if it contains a structured list of target UIDs
-            if (Array.isArray(val) && val.length > 0) {
-                return true;
-            }
-            
-            // Discard if it's a non-empty string with specific UID numbers
-            if (typeof val === 'string' && val.trim().length > 0) {
-                if (/\d+/.test(val)) return true;
-            }
-            
-            // Discard if it represents an individual target ID assignment
-            if (typeof val === 'number') {
-                return true;
-            }
+            if (Array.isArray(val) && val.length > 0) return true;
+            if (typeof val === 'string' && val.trim().length > 0 && /\d+/.test(val)) return true;
+            if (typeof val === 'number') return true;
         }
     }
 
-    // Secondary deep text description checks
-    const titleStr = String(task.title || '').toLowerCase();
     const descStr = String(task.description || task.content || '').toLowerCase();
-    
     if (descStr.includes('specific uid') || 
         descStr.includes('whitelist only') || 
         descStr.includes('target uid') || 
@@ -102,7 +91,7 @@ function hasSpecificUIDs(task) {
     return false;
 }
 
-// Helper to check if task matches configured check type (automatic, manual, or both)
+// Check Type Matcher
 function matchesTaskCheckType(task) {
     if (TASK_CHECK_TYPE === 'both') return true;
 
@@ -117,23 +106,34 @@ function matchesTaskCheckType(task) {
     return true;
 }
 
-// 3. Filtered & Sorted Bitget API Fetcher
-async function fetchCampaigns() {
+// Fetch helper with headers
+async function fetchRawCampaigns() {
+    const headers = {
+        "accept": "application/json, text/plain, */*",
+        "accept-language": "en-US,en;q=0.9",
+        "Referer": "https://www.bitgetbuilder.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    };
+
+    if (SESSION_COOKIE) headers["cookie"] = SESSION_COOKIE;
+    if (AUTHORIZATION_HEADER) headers["authorization"] = AUTHORIZATION_HEADER;
+
     const response = await fetch("https://api.bitgetbuilder.com/server/campaigns", {
-        "headers": {
-            "accept": "application/json, text/plain, */*",
-            "accept-language": "en-US,en;q=0.9",
-            "Referer": "https://www.bitgetbuilder.com/"
-        },
+        "headers": headers,
         "method": "GET"
     });
     
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     const data = await response.json();
     
-    let allTasks = Array.isArray(data.campaigns) ? data.campaigns : (Array.isArray(data) ? data : []);
+    return Array.isArray(data.campaigns) ? data.campaigns : (Array.isArray(data) ? data : []);
+}
+
+// Filter engine
+async function fetchCampaigns() {
+    const allTasks = await fetchRawCampaigns();
     
-    // Sort by ID descending
+    // Sort descending
     allTasks.sort((a, b) => {
         const idA = parseInt(String(a.id).replace(/\D/g, '')) || 0;
         const idB = parseInt(String(b.id).replace(/\D/g, '')) || 0;
@@ -141,9 +141,6 @@ async function fetchCampaigns() {
     });
 
     return allTasks.filter(task => {
-        const taskId = task.id || 'Unknown';
-
-        // RULE 1: Time Check
         const dueStr = task.endTime || task.end_time || task.dueDate || task.deadline || task.due;
         if (dueStr) {
             const cleanDateStr = String(dueStr).replace(/\(GMT[+-]\d+\)/i, '').trim();
@@ -151,11 +148,9 @@ async function fetchCampaigns() {
             if (!isNaN(endMs) && endMs < Date.now()) return false; 
         }
 
-        // RULE 2: Status Check
         const statusStr = String(task.status || task.state || task.taskStatus || '').toLowerCase();
         if (statusStr === 'ended' || statusStr === 'completed') return false;
 
-        // RULE 3: Exclude targeted or private titles
         const titleStr = String(task.title || task.name || '').toLowerCase();
         const teamStr = String(task.team || task.taskCategory || '').toLowerCase().trim();
 
@@ -167,7 +162,6 @@ async function fetchCampaigns() {
             return false; 
         }
 
-        // RULE 4: Strict Core Builder, Trainee & VIP Role Whitelist
         const isTargetedGroup = teamStr === '' || 
                                teamStr === 'none' || 
                                teamStr === 'null' || 
@@ -178,22 +172,103 @@ async function fetchCampaigns() {
                                teamStr.includes('open');
 
         if (!isTargetedGroup) return false; 
+        if (hasSpecificUIDs(task)) return false;
+        if (!matchesTaskCheckType(task)) return false;
 
-        // RULE 5: EXCLUDE tasks containing Specific whitelists / target UIDs
-        if (hasSpecificUIDs(task)) {
-            console.log(`[Diagnostic] Skipped Task ${taskId} -> Contains Specific UID restrictions.`);
-            return false;
-        }
-
-        // RULE 6: Automatic vs Manual Type Matcher
-        if (!matchesTaskCheckType(task)) {
-            console.log(`[Diagnostic] Skipped Task ${taskId} -> Does not match TASK_CHECK_TYPE (${TASK_CHECK_TYPE}).`);
-            return false;
-        }
-
-        console.log(`[Diagnostic] Task ${taskId} (${task.title || 'Untitled'}) matches filters!`);
         return true; 
     });
+}
+
+// Live In-Chat Diagnostic Generator
+async function getTaskFilteringReport() {
+    try {
+        const allTasks = await fetchRawCampaigns();
+        
+        if (allTasks.length === 0) {
+            return `⚠️ <b>API returned 0 tasks.</b>\n\n` +
+                   `This means the API rejected Render's request because you are not logged in.\n\n` +
+                   `💡 <b>How to Fix:</b>\n` +
+                   `1. Log in to the site on your computer browser.\n` +
+                   `2. Open Inspect -> Network -> select the <code>campaigns</code> request.\n` +
+                   `3. Copy the <code>Cookie</code> or <code>Authorization</code> header.\n` +
+                   `4. Go to Render Dashboard -> Environment -> Add <code>SESSION_COOKIE</code> or <code>AUTHORIZATION</code> variable.`;
+        }
+
+        let report = `📊 <b>Diagnostic Filter Report</b>\n`;
+        report += `Total Raw Tasks Fetched: <b>${allTasks.length}</b>\n\n`;
+
+        // Audit the top 5 tasks to see why they passed or failed
+        const sampleTasks = allTasks.slice(0, 5);
+        for (const task of sampleTasks) {
+            const taskId = task.id || 'N/A';
+            const title = task.title || task.name || 'Untitled';
+            let status = "✅ PASSED";
+            let reason = "";
+
+            // 1. Time
+            const dueStr = task.endTime || task.end_time || task.dueDate || task.deadline || task.due;
+            if (dueStr) {
+                const cleanDateStr = String(dueStr).replace(/\(GMT[+-]\d+\)/i, '').trim();
+                const endMs = new Date(cleanDateStr).getTime();
+                if (!isNaN(endMs) && endMs < Date.now()) {
+                    status = "❌ SKIPPED";
+                    reason = `Time expired`;
+                }
+            }
+
+            // 2. Status Check
+            if (status === "✅ PASSED") {
+                const statusStr = String(task.status || task.state || task.taskStatus || '').toLowerCase();
+                if (statusStr === 'ended' || statusStr === 'completed') {
+                    status = "❌ SKIPPED";
+                    reason = `Status is "${statusStr}"`;
+                }
+            }
+
+            // 3. Blacklist Check
+            if (status === "✅ PASSED") {
+                const titleStr = String(task.title || task.name || '').toLowerCase();
+                const teamStr = String(task.team || task.taskCategory || '').toLowerCase().trim();
+                if (titleStr.includes('(cmc)') || titleStr.includes('winner') || titleStr.includes('reddit') || teamStr.includes('target') || teamStr.includes('private')) {
+                    status = "❌ SKIPPED";
+                    reason = `Hit word blacklist`;
+                }
+            }
+
+            // 4. Group check
+            const teamStr = String(task.team || task.taskCategory || '').toLowerCase().trim();
+            if (status === "✅ PASSED") {
+                const isTargetedGroup = teamStr === '' || teamStr === 'none' || teamStr === 'null' || teamStr.includes('core') || teamStr.includes('trainee') || teamStr.includes('vip') || teamStr.includes('everyone') || teamStr.includes('open');
+                if (!isTargetedGroup) {
+                    status = "❌ SKIPPED";
+                    reason = `Not whitelisted role (Team: "${teamStr}")`;
+                }
+            }
+
+            // 5. Specific UIDs check
+            if (status === "✅ PASSED" && hasSpecificUIDs(task)) {
+                status = "❌ SKIPPED";
+                reason = `UID restriction / whitelist detected`;
+            }
+
+            // 6. Check Type Match
+            if (status === "✅ PASSED" && !matchesTaskCheckType(task)) {
+                status = "❌ SKIPPED";
+                reason = `Check type mismatches filter`;
+            }
+
+            report += `🔹 <b>[ID: ${taskId}]</b> ${escapeHTML(title.substring(0, 30))}...\n`;
+            report += `Result: ${status} ${reason ? `(${reason})` : ''}\n\n`;
+        }
+
+        if (allTasks[0]) {
+            report += `🔑 <b>First Task JSON Keys:</b>\n<code>${Object.keys(allTasks[0]).join(', ')}</code>\n`;
+        }
+
+        return report;
+    } catch (err) {
+        return `❌ <b>Diagnostic Error:</b> ${escapeHTML(err.message)}`;
+    }
 }
 
 // 4. Autonomous 1-Minute Scanner
@@ -240,30 +315,30 @@ async function scanTasksAutomatic() {
     }
 }
 
-// 5. Interactive Command Terminal
+// 5. Command Terminal
 async function handleCommand(chatId, text) {
     const cleanText = text.trim().toLowerCase();
 
     if (cleanText === '/start') {
         const startMenu = `⚡ <b>BuildersWatcherBot</b> ⚡\n\n` +
-                          `I am built for scanning for new tasks on the <a href="https://www.bitgetbuilder.com/">Bitget Builder Hub</a> to give immediate, quick, and sharp notice to connected builders.\n\n` +
                           `⚙️ <b>System Settings:</b>\n` +
                           `⏱️ <b>Auto Scan:</b> Every 1 minute\n` +
                           `🧹 <b>Filter Mode:</b> Active (Role: Core/Trainee/VIP, Type: ${TASK_CHECK_TYPE.toUpperCase()}, Whitelisted UIDs: Excluded)\n\n` +
                           `🛠️ <b>Commands:</b>\n` +
-                          `🔹 /start - View this setup menu.\n` +
+                          `🔹 /start - View setup menu.\n` +
                           `🔹 /scan - Force an immediate manual check for live tasks.`;
                             
         await sendMessage(chatId, startMenu);
     } 
     
     else if (cleanText === '/scan') {
-        await sendMessage(chatId, `🔍 <b>Scanning for ONGOING tasks only...</b>`);
+        await sendMessage(chatId, `🔍 <b>Scanning for ONGOING tasks...</b>`);
         try {
             const activeTasks = await fetchCampaigns();
             
             if (activeTasks.length === 0) {
-                await sendMessage(chatId, `⏸️ <b>Status:</b> Radar is clear. No active open tasks match.`);
+                const diagnosticReport = await getTaskFilteringReport();
+                await sendMessage(chatId, `⏸️ <b>Status:</b> Radar is clear. No active open tasks match.\n\n${diagnosticReport}`);
                 return;
             }
 
@@ -310,7 +385,7 @@ async function listenForCommands() {
                     if (CHAT_IDS.includes(chatId)) {
                         await handleCommand(chatId, update.message.text);
                     } else {
-                        console.log(`[Diagnostic] Unauthorized Chat ID ignored: "${chatId}"`);
+                        console.log(`[Diagnostic] Unauthorized Chat ID: "${chatId}"`);
                     }
                 }
             }
