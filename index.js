@@ -33,28 +33,33 @@ function escapeHTML(str) {
         .replace(/>/g, '&gt;');
 }
 
+// Fixed robust mathematical timezone parser to support exact offsets like (GMT+8)
 function parseTaskDate(dateStr) {
     if (!dateStr) return 0;
     
-    const tzMatch = String(dateStr).match(/\(GMT[+-]\d+\)/i);
+    const tzMatch = String(dateStr).match(/\(GMT([+-]\d+)\)/i);
     let cleanStr = String(dateStr).replace(/\(GMT[+-]\d+\)/i, '').trim();
-    const normalized = cleanStr.replace(/\//g, '-').replace(' ', 'T');
     
-    if (tzMatch) {
-        const offsetNum = parseInt(tzMatch[1], 10);
-        const sign = offsetNum >= 0 ? '+' : '-';
-        const absoluteOffset = Math.abs(offsetNum);
-        const formattedOffset = `${sign}${String(absoluteOffset).padStart(2, '0')}:00`;
-        
-        const isoString = `${normalized}:00${formattedOffset}`;
-        const parsed = Date.parse(isoString);
-        return isNaN(parsed) ? 0 : parsed;
+    // Normalize format natively
+    let parsedMs = Date.parse(cleanStr);
+    if (isNaN(parsedMs)) {
+        parsedMs = Date.parse(cleanStr.replace(/\//g, '-'));
     }
     
-    const parsed = Date.parse(normalized);
-    return isNaN(parsed) ? 0 : parsed;
+    if (isNaN(parsedMs)) return 0;
+
+    if (tzMatch) {
+        const offsetHours = parseInt(tzMatch[1], 10);
+        const localOffsetMs = new Date().getTimezoneOffset() * 60 * 1000;
+        const utcMs = parsedMs - localOffsetMs;
+        const targetOffsetMs = offsetHours * 60 * 60 * 1000;
+        return utcMs - targetOffsetMs;
+    }
+    
+    return parsedMs;
 }
 
+// Generates a professional countdown string
 function getCountdownString(deadlineStr) {
     const deadlineMs = parseTaskDate(deadlineStr);
     if (!deadlineMs) return 'Not Specified';
@@ -70,34 +75,38 @@ function getCountdownString(deadlineStr) {
     const remainingMins = diffMins % 60;
 
     let parts = [];
-    if (diffDays > 0) parts.push(`${diffDays}d`);
-    if (remainingHours > 0 || diffDays > 0) parts.push(`${remainingHours}h`);
+    if (diffDays > 0) {
+        parts.push(`${diffDays}d`);
+    }
+    if (remainingHours > 0 || diffDays > 0) {
+        parts.push(`${remainingHours}h`);
+    }
     parts.push(`${remainingMins}m`);
 
     return parts.join(' ');
 }
 
-// 1. Initialize Render Health Check Server
+// Initialize Render Health Check Server
 const app = express();
 app.get('/', (req, res) => res.send('BuildersWatcherBot is online.'));
 app.listen(PORT, () => console.log(`Health check server listening on port ${PORT}`));
 
-// Self-Pinger to bypass Render's Free Tier 15-minute sleep cycle
+// Self-Pinger to bypass Render's Free Tier sleep policy
 function startSelfPinger() {
     if (RENDER_EXTERNAL_URL) {
         console.log(`[Keep-Alive] Self-Pinger activated targeting: ${RENDER_EXTERNAL_URL}`);
         setInterval(() => {
-            console.log(`[Keep-Alive] Sending self-ping to keep server awake...`);
+            console.log(`[Keep-Alive] Sending self-ping...`);
             fetch(RENDER_EXTERNAL_URL)
                 .then(res => console.log(`[Keep-Alive] Self-ping successful: HTTP ${res.status}`))
                 .catch(err => console.error(`[Keep-Alive] Self-ping failed:`, err.message));
         }, 10 * 60 * 1000); // Ping every 10 minutes
     } else {
-        console.warn("[Keep-Alive] Warning: RENDER_EXTERNAL_URL is not set. Self-pinger disabled.");
+        console.warn("[Keep-Alive] RENDER_EXTERNAL_URL is not set. Self-pinger disabled.");
     }
 }
 
-// 2. Telegram Message Engine
+// Telegram Message Engine
 async function sendMessage(chatId, text) {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
     try {
@@ -120,6 +129,7 @@ async function sendMessage(chatId, text) {
     }
 }
 
+// Strict UID Checker matching the API schema
 function hasSpecificUIDs(task) {
     const autoUids = task.autoSelectedUIDs;
     if (autoUids) {
@@ -138,6 +148,7 @@ function hasSpecificUIDs(task) {
     return false;
 }
 
+// Check Type Matcher
 function matchesTaskCheckType(task) {
     if (TASK_CHECK_TYPE === 'both') return true;
 
@@ -150,6 +161,7 @@ function matchesTaskCheckType(task) {
     return true;
 }
 
+// Fetch helper with headers
 async function fetchRawCampaigns() {
     const headers = {
         "accept": "application/json, text/plain, */*",
@@ -172,6 +184,7 @@ async function fetchRawCampaigns() {
     return Array.isArray(data.campaigns) ? data.campaigns : (Array.isArray(data) ? data : []);
 }
 
+// Filter Engine
 async function fetchCampaigns() {
     const allTasks = await fetchRawCampaigns();
     
@@ -216,6 +229,7 @@ async function fetchCampaigns() {
     });
 }
 
+// In-Chat Diagnostic Generator
 async function getTaskFilteringReport() {
     try {
         const allTasks = await fetchRawCampaigns();
@@ -278,6 +292,7 @@ async function getTaskFilteringReport() {
     }
 }
 
+// Autonomous 1-Minute Scanner
 async function scanTasksAutomatic() {
     console.log(`[${new Date().toLocaleTimeString()}] Running automated node scan...`);
     try {
@@ -323,6 +338,7 @@ async function scanTasksAutomatic() {
     }
 }
 
+// Command Terminal
 async function handleCommand(chatId, text) {
     const cleanText = text.trim().toLowerCase();
 
@@ -378,6 +394,7 @@ async function handleCommand(chatId, text) {
     }
 }
 
+// Long Polling Command Listener
 async function listenForCommands() {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates?offset=${offset}&timeout=30`;
     try {
@@ -404,7 +421,6 @@ async function listenForCommands() {
     setTimeout(listenForCommands, 500);
 }
 
-// Start core system
 scanTasksAutomatic();              
 setInterval(scanTasksAutomatic, CHECK_INTERVAL); 
 listenForCommands();
