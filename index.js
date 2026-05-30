@@ -6,6 +6,9 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_IDS = process.env.CHAT_ID ? process.env.CHAT_ID.split(',').map(id => id.trim()) : [];
 const PORT = process.env.PORT || 3000;
 
+// Render automatically injects this environment variable in Web Services
+const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || ''; 
+
 // Configurable Task Filter: 'automatic', 'manual', or 'both'
 const TASK_CHECK_TYPE = (process.env.TASK_CHECK_TYPE || 'both').toLowerCase().trim();
 
@@ -30,14 +33,11 @@ function escapeHTML(str) {
         .replace(/>/g, '&gt;');
 }
 
-// Robust ISO-8601 timezone parser to support exact offsets like (GMT+8)
 function parseTaskDate(dateStr) {
     if (!dateStr) return 0;
     
-    const tzMatch = String(dateStr).match(/\(GMT([+-]\d+)\)/i);
+    const tzMatch = String(dateStr).match(/\(GMT[+-]\d+\)/i);
     let cleanStr = String(dateStr).replace(/\(GMT[+-]\d+\)/i, '').trim();
-    
-    // Normalize format to YYYY-MM-DDTHH:mm
     const normalized = cleanStr.replace(/\//g, '-').replace(' ', 'T');
     
     if (tzMatch) {
@@ -46,7 +46,6 @@ function parseTaskDate(dateStr) {
         const absoluteOffset = Math.abs(offsetNum);
         const formattedOffset = `${sign}${String(absoluteOffset).padStart(2, '0')}:00`;
         
-        // Assemble valid ISO-8601 string: "2026-05-31T18:00:00+08:00"
         const isoString = `${normalized}:00${formattedOffset}`;
         const parsed = Date.parse(isoString);
         return isNaN(parsed) ? 0 : parsed;
@@ -56,7 +55,6 @@ function parseTaskDate(dateStr) {
     return isNaN(parsed) ? 0 : parsed;
 }
 
-// Generates a professional countdown string
 function getCountdownString(deadlineStr) {
     const deadlineMs = parseTaskDate(deadlineStr);
     if (!deadlineMs) return 'Not Specified';
@@ -72,23 +70,34 @@ function getCountdownString(deadlineStr) {
     const remainingMins = diffMins % 60;
 
     let parts = [];
-    if (diffDays > 0) {
-        parts.push(`${diffDays}d`);
-    }
-    if (remainingHours > 0 || diffDays > 0) {
-        parts.push(`${remainingHours}h`);
-    }
+    if (diffDays > 0) parts.push(`${diffDays}d`);
+    if (remainingHours > 0 || diffDays > 0) parts.push(`${remainingHours}h`);
     parts.push(`${remainingMins}m`);
 
     return parts.join(' ');
 }
 
-// Initialize Render Health Check Server
+// 1. Initialize Render Health Check Server
 const app = express();
 app.get('/', (req, res) => res.send('BuildersWatcherBot is online.'));
 app.listen(PORT, () => console.log(`Health check server listening on port ${PORT}`));
 
-// Telegram Message Engine
+// Self-Pinger to bypass Render's Free Tier 15-minute sleep cycle
+function startSelfPinger() {
+    if (RENDER_EXTERNAL_URL) {
+        console.log(`[Keep-Alive] Self-Pinger activated targeting: ${RENDER_EXTERNAL_URL}`);
+        setInterval(() => {
+            console.log(`[Keep-Alive] Sending self-ping to keep server awake...`);
+            fetch(RENDER_EXTERNAL_URL)
+                .then(res => console.log(`[Keep-Alive] Self-ping successful: HTTP ${res.status}`))
+                .catch(err => console.error(`[Keep-Alive] Self-ping failed:`, err.message));
+        }, 10 * 60 * 1000); // Ping every 10 minutes
+    } else {
+        console.warn("[Keep-Alive] Warning: RENDER_EXTERNAL_URL is not set. Self-pinger disabled.");
+    }
+}
+
+// 2. Telegram Message Engine
 async function sendMessage(chatId, text) {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
     try {
@@ -111,7 +120,6 @@ async function sendMessage(chatId, text) {
     }
 }
 
-// Strict UID Checker matching the API schema
 function hasSpecificUIDs(task) {
     const autoUids = task.autoSelectedUIDs;
     if (autoUids) {
@@ -130,7 +138,6 @@ function hasSpecificUIDs(task) {
     return false;
 }
 
-// Check Type Matcher
 function matchesTaskCheckType(task) {
     if (TASK_CHECK_TYPE === 'both') return true;
 
@@ -143,7 +150,6 @@ function matchesTaskCheckType(task) {
     return true;
 }
 
-// Fetch helper with headers
 async function fetchRawCampaigns() {
     const headers = {
         "accept": "application/json, text/plain, */*",
@@ -166,7 +172,6 @@ async function fetchRawCampaigns() {
     return Array.isArray(data.campaigns) ? data.campaigns : (Array.isArray(data) ? data : []);
 }
 
-// Filter Engine
 async function fetchCampaigns() {
     const allTasks = await fetchRawCampaigns();
     
@@ -211,7 +216,6 @@ async function fetchCampaigns() {
     });
 }
 
-// In-Chat Diagnostic Generator
 async function getTaskFilteringReport() {
     try {
         const allTasks = await fetchRawCampaigns();
@@ -274,7 +278,6 @@ async function getTaskFilteringReport() {
     }
 }
 
-// Autonomous 1-Minute Scanner
 async function scanTasksAutomatic() {
     console.log(`[${new Date().toLocaleTimeString()}] Running automated node scan...`);
     try {
@@ -320,7 +323,6 @@ async function scanTasksAutomatic() {
     }
 }
 
-// Command Terminal
 async function handleCommand(chatId, text) {
     const cleanText = text.trim().toLowerCase();
 
@@ -376,7 +378,6 @@ async function handleCommand(chatId, text) {
     }
 }
 
-// Long Polling Command Listener
 async function listenForCommands() {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates?offset=${offset}&timeout=30`;
     try {
@@ -403,6 +404,10 @@ async function listenForCommands() {
     setTimeout(listenForCommands, 500);
 }
 
+// Start core system
 scanTasksAutomatic();              
 setInterval(scanTasksAutomatic, CHECK_INTERVAL); 
 listenForCommands();
+
+// Start Self-Pinger for 24/7 runtime
+startSelfPinger();
