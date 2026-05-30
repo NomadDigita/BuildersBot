@@ -37,7 +37,7 @@ async function sendMessage(chatId, text) {
     }
 }
 
-// 3. Fetch Campaigns API
+// 3. Fetch Campaigns API (Now with a filter for active tasks)
 async function fetchCampaigns() {
     const response = await fetch("https://api.bitgetbuilder.com/server/campaigns", {
         "headers": {
@@ -49,7 +49,17 @@ async function fetchCampaigns() {
     });
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     const data = await response.json();
-    return Array.isArray(data.campaigns) ? data.campaigns : (Array.isArray(data) ? data : []);
+    
+    // Grab the raw array
+    let allTasks = Array.isArray(data.campaigns) ? data.campaigns : (Array.isArray(data) ? data : []);
+    
+    // Filter out ended tasks. (The Bitget API likely uses a 'status' field. We will keep anything that isn't explicitly 'ended' or 'submitted')
+    let activeTasks = allTasks.filter(task => {
+        const status = (task.status || '').toLowerCase();
+        return status !== 'ended' && status !== 'submitted' && status !== 'completed';
+    });
+
+    return activeTasks;
 }
 
 // 4. 1-Minute Auto Scanner (Detailed & Silent on Boot)
