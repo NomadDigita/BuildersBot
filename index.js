@@ -6,19 +6,19 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_IDS = process.env.CHAT_ID ? process.env.CHAT_ID.split(',') : [];
 const PORT = process.env.PORT || 3000;
 
-// UPGRADE: Changed to 1 minute
+// High-frequency 1-minute interval
 const CHECK_INTERVAL = 1 * 60 * 1000; 
 
 let offset = 0;
-let seenTasks = new Set(); // UPGRADE: In-memory storage replaces the JSON file
-let isFirstBoot = true;    // UPGRADE: Silent boot flag
+let seenTasks = new Set(); // High-speed in-memory storage
+let isFirstBoot = true;    // Stealth boot state
 
-// 1. Initialize Dummy Web Server
+// 1. Initialize Render Health Check Server
 const app = express();
-app.get('/', (req, res) => res.send('Bitget Watcher Bot is running (1-min intervals).'));
+app.get('/', (req, res) => res.send('Builders Watcher OS is online.'));
 app.listen(PORT, () => console.log(`Health check server listening on port ${PORT}`));
 
-// 2. Telegram Message Helper
+// 2. Telegram Message Engine
 async function sendMessage(chatId, text) {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
     try {
@@ -37,7 +37,7 @@ async function sendMessage(chatId, text) {
     }
 }
 
-// 3. Fetch Campaigns API (Now with a filter for active tasks)
+// 3. Filtered Bitget API Fetcher
 async function fetchCampaigns() {
     const response = await fetch("https://api.bitgetbuilder.com/server/campaigns", {
         "headers": {
@@ -50,45 +50,40 @@ async function fetchCampaigns() {
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     const data = await response.json();
     
-    // Grab the raw array
     let allTasks = Array.isArray(data.campaigns) ? data.campaigns : (Array.isArray(data) ? data : []);
     
-    // Filter out ended tasks. (The Bitget API likely uses a 'status' field. We will keep anything that isn't explicitly 'ended' or 'submitted')
-    let activeTasks = allTasks.filter(task => {
+    // STRICT FILTER: Keep only live/ongoing tasks. Ignore ended, completed, or submitted ones.
+    return allTasks.filter(task => {
         const status = (task.status || '').toLowerCase();
         return status !== 'ended' && status !== 'submitted' && status !== 'completed';
     });
-
-    return activeTasks;
 }
 
-// 4. 1-Minute Auto Scanner (Detailed & Silent on Boot)
+// 4. Autonomous 1-Minute Scanner
 async function scanTasksAutomatic() {
-    console.log(`[${new Date().toLocaleTimeString()}] Running 1-minute auto scan...`);
+    console.log(`[${new Date().toLocaleTimeString()}] Running automated node scan...`);
     try {
-        const dynamicTasks = await fetchCampaigns();
+        const activeTasks = await fetchCampaigns();
         let foundNewTask = false;
 
-        for (const task of dynamicTasks) {
+        for (const task of activeTasks) {
             if (task.id && !seenTasks.has(task.id)) {
-                // Memorize the task ID
                 seenTasks.add(task.id);
 
-                // UPGRADE: Only send alerts if this is NOT the bot's first time waking up
+                // Broadcast if not stealth booting
                 if (!isFirstBoot) {
                     foundNewTask = true;
                     
-                    // Fallback to 'N/A' if the Bitget API uses slightly different keys for details
                     const taskTitle = task.title || task.name || task.taskCategory || 'Untitled Campaign';
                     const taskTeam = task.team || task.assignedBy || 'N/A';
                     const maxContent = task.maxContent || task.fcfs || 'N/A';
 
-                    const message = `🚨 *New Bitget Builder Task!* 🚨\n\n` +
-                                    `📌 *Name:* ${taskTitle}\n` +
-                                    `🆔 *ID:* \`${task.id}\`\n` +
-                                    `👥 *Team:* ${taskTeam}\n` +
-                                    `⚡ *Limit/FCFS:* ${maxContent}\n\n` +
-                                    `🔗 [Open Builder Hub](https://www.bitgetbuilder.com/)`;
+                    const message = `🚨 *NEW PRIORITY TASK DEPLOYED* 🚨\n\n` +
+                                    `📌 *Title:* ${taskTitle}\n` +
+                                    `🆔 *Sys ID:* \`${task.id}\`\n` +
+                                    `👥 *Division:* ${taskTeam}\n` +
+                                    `⚡ *Capacity:* ${maxContent}\n\n` +
+                                    `[Execute on Builder Hub](https://www.bitgetbuilder.com/)`;
 
                     for (const chatId of CHAT_IDS) {
                         await sendMessage(chatId.trim(), message);
@@ -97,56 +92,58 @@ async function scanTasksAutomatic() {
             }
         }
 
-        // Handle the Boot State Logging
         if (isFirstBoot) {
-            console.log(`Silent boot complete. Memorized ${seenTasks.size} existing tasks without spamming.`);
-            isFirstBoot = false; // Turn off silent mode forever until next reboot
+            console.log(`Stealth boot complete. Memorized ${seenTasks.size} active tasks. Notifications armed.`);
+            isFirstBoot = false; 
         } else if (!foundNewTask) {
-            console.log('No new tasks found this minute.');
+            console.log('No new tasks found this cycle.');
         }
 
     } catch (error) {
-        console.error('Automatic scan failed:', error.message);
+        console.error('Scan failure:', error.message);
     }
 }
 
-// 5. Handle Incoming Commands
+// 5. Interactive Command Terminal
 async function handleCommand(chatId, text) {
     const cleanText = text.trim().toLowerCase();
 
     if (cleanText === '/start') {
-        const welcomeMessage = `⚡ *BuildersWatcherBot Ready* ⚡\n\n` +
-                               `I am an automated task tracker monitoring the *Bitget Builder Hub*.\n\n` +
-                               `⚙️ *Settings:* \n` +
-                               `• *Auto Scan:* Every 1 minute.\n` +
-                               `• *Silent Boot:* Enabled (No spam on server restart).\n\n` +
-                               `🛠️ *Commands:* \n` +
-                               `• /start - View this menu.\n` +
-                               `• /scan - View a clean list of currently available tasks.`;
-        await sendMessage(chatId, welcomeMessage);
+        const premiumMenu = `💎 *Builders Watcher OS | Elite Edition* 💎\n\n` +
+                            `*System Status:* ONLINE 🟢\n` +
+                            `High-frequency architectural node actively monitoring the Bitget Builder Hub for tier-1 opportunities.\n\n` +
+                            `⚙️ *System Specifications:*\n` +
+                            `⏱️ *Ping Rate:* 60,000ms (1 Minute)\n` +
+                            `🔕 *Stealth Boot:* Active (Spam protection)\n` +
+                            `🧹 *Data Filter:* Active (Dead tasks ignored)\n\n` +
+                            `🛠️ *Available Directives:*\n` +
+                            `🔹 /start - Launch OS Interface\n` +
+                            `🔹 /scan - Request real-time index of live tasks`;
+                            
+        await sendMessage(chatId, premiumMenu);
     } 
     
     else if (cleanText === '/scan') {
-        await sendMessage(chatId, `🔍 *Checking live tasks...*`);
+        await sendMessage(chatId, `⏳ *Querying Bitget servers for live bounties...*`);
         try {
-            const dynamicTasks = await fetchCampaigns();
+            const activeTasks = await fetchCampaigns();
             
-            if (dynamicTasks.length === 0) {
-                await sendMessage(chatId, `⏸️ *Status:* There are no active tasks right now.`);
+            if (activeTasks.length === 0) {
+                await sendMessage(chatId, `⏸️ *Status:* Radar is clear. No active tasks available.`);
                 return;
             }
 
-            // UPGRADE: Simple layout just for manual scanning
-            let reportMessage = `✅ *Live Campaigns Available:*\n\n`;
-            for (const task of dynamicTasks) {
+            let reportMessage = `✅ *Active Tasks Found (${activeTasks.length}):*\n\n`;
+            for (const task of activeTasks) {
                 const taskTitle = task.title || task.name || task.taskCategory || 'Untitled Task';
                 reportMessage += `📌 *${taskTitle}*\n🆔 \`${task.id || 'N/A'}\`\n\n`;
             }
-            reportMessage += `🔗 [Check Manually](https://www.bitgetbuilder.com/)`;
+            reportMessage += `🔗 [Access Builder Hub](https://www.bitgetbuilder.com/)`;
+            
             await sendMessage(chatId, reportMessage);
 
         } catch (error) {
-            await sendMessage(chatId, `❌ *Error:* ${error.message}`);
+            await sendMessage(chatId, `❌ *Query Error:* ${error.message}`);
         }
     }
 }
@@ -176,7 +173,7 @@ async function listenForCommands() {
     setTimeout(listenForCommands, 500);
 }
 
-// Boot Sequence
-scanTasksAutomatic();              // Run silent boot scan immediately
-setInterval(scanTasksAutomatic, CHECK_INTERVAL); // Start 1-minute loop
-listenForCommands();               // Listen for /scan and /start
+// Boot Sequence Initialization
+scanTasksAutomatic();              
+setInterval(scanTasksAutomatic, CHECK_INTERVAL); 
+listenForCommands();
