@@ -76,27 +76,32 @@ async function fetchCampaigns() {
             return false;
         }
 
-        // RULE 3: THE GOLDEN WHITELIST
-        // If the task explicitly mentions public groups, it is an open task. Allow it immediately.
-        const isPublicGroup = taskStr.includes('core builder') || 
-                              taskStr.includes('trainee') || 
-                              taskStr.includes('vip') || 
-                              taskStr.includes('everyone') ||
-                              taskStr.includes('open task');
-                              
-        if (isPublicGroup) {
-            return true; 
-        }
+        // RULE 3: THE STRICT BLACKLIST (Must run BEFORE the whitelist)
+        // If it has specific UID arrays, it's a targeted task for specific people. Block it instantly.
+        if (Array.isArray(task.uids) && task.uids.length > 0) return false;
+        if (Array.isArray(task.targetUids) && task.targetUids.length > 0) return false;
 
-        // RULE 4: THE STRICT BLACKLIST
-        // If it didn't pass the whitelist above, check if it's restricted to specific people.
+        // If explicitly labeled private or target team. Block it.
         if (taskStr.includes('target team') || taskStr.includes('private')) {
             return false; 
         }
+
+        // RULE 4: THE GOLDEN WHITELIST
+        const teamStr = String(task.team || task.taskCategory || '').toLowerCase();
         
-        // If it has specific UID arrays, it's a targeted task. Block it.
-        if (Array.isArray(task.uids) && task.uids.length > 0) return false;
-        if (Array.isArray(task.targetUids) && task.targetUids.length > 0) return false;
+        // Allowed keywords that signify the task is open to general builder groups
+        const isPublicGroup = teamStr === '' || 
+                              teamStr === 'none' ||
+                              teamStr === 'null' ||
+                              teamStr.includes('core') || 
+                              teamStr.includes('trainee') || 
+                              teamStr.includes('vip') || 
+                              teamStr.includes('everyone');
+
+        // If the team/category is NOT one of those public groups, block it.
+        if (!isPublicGroup) {
+            return false;
+        }
 
         return true; 
     });
