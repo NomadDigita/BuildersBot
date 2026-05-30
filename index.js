@@ -144,8 +144,7 @@ async function handleCommand(chatId, text) {
                           `🧹 *Data Filter:* Active (Ended & private tasks removed, open tasks only)\n\n` +
                           `🛠️ *Commands:*\n` +
                           `🔹 /start - View this setup menu and bot capabilities.\n` +
-                          `🔹 /scan - Force an immediate manual check for live tasks.\n\n` +
-                          `— @Asiwaju`;
+                          `🔹 /scan - Force an immediate manual check for live tasks.`;
                             
         await sendMessage(chatId, startMenu);
     } 
