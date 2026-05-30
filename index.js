@@ -66,24 +66,25 @@ async function fetchCampaigns() {
             if (endMs < Date.now()) return false; 
         }
 
-        const str = JSON.stringify(task).toLowerCase();
-        
-        // RULE 2: Kill tasks marked as ended or submitted
-        if (str.includes('"status":2') || 
-            str.includes('"status":3') || 
-            str.includes('"state":2') || 
-            str.includes('ended') || 
-            str.includes('submitted')) {
+        // RULE 2: Kill tasks explicitly marked as ended (No more aggressive stringify search!)
+        const statusStr = String(task.status || task.state || task.taskStatus || '').toLowerCase();
+        if (statusStr === 'ended' || statusStr === 'completed' || statusStr === 'submitted') {
             return false;
         }
 
         // RULE 3: PUBLIC ONLY FILTER
-        // Strictly filter by "target" or "private" tags. (Core Builder & Trainee are safe!)
         const category = String(task.taskCategory || task.team || '').toLowerCase();
+        
+        // Kill tasks explicitly labeled for Target Teams or Private
         if (category.includes('target') || category.includes('private')) {
             return false; 
         }
         
+        // Kill tasks that are restricted to a whitelist of specific UIDs (This kills 1113!)
+        if (Array.isArray(task.uids) && task.uids.length > 0) return false;
+        if (Array.isArray(task.targetUids) && task.targetUids.length > 0) return false;
+
+        // Open tasks with 'Core Builder' or 'Trainee' survive and make it here!
         return true; 
     });
 }
@@ -144,7 +145,8 @@ async function handleCommand(chatId, text) {
                           `🧹 *Data Filter:* Active (Ended & private tasks removed, open tasks only)\n\n` +
                           `🛠️ *Commands:*\n` +
                           `🔹 /start - View this setup menu and bot capabilities.\n` +
-                          `🔹 /scan - Force an immediate manual check for live tasks.`;
+                          `🔹 /scan - Force an immediate manual check for live tasks.\n\n` +
+                          `— @Asiwaju`;
                             
         await sendMessage(chatId, startMenu);
     } 
