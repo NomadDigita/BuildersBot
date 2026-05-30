@@ -65,24 +65,29 @@ async function fetchCampaigns() {
             const endMs = new Date(dueStr).getTime();
             if (endMs < Date.now()) return false; 
         }
-        
-        // RULE 2: Kill tasks explicitly marked as ended (NO MORE STRINGIFY SEARCH!)
+
+        // RULE 2: Kill tasks explicitly marked as ended
         const statusStr = String(task.status || task.state || task.taskStatus || '').toLowerCase();
         if (statusStr === 'ended' || statusStr === 'completed' || statusStr === '2' || statusStr === '3') {
             return false;
         }
 
-        // RULE 3: PUBLIC ONLY FILTER
-        const category = String(task.taskCategory || task.team || '').toLowerCase();
+        // RULE 3: STRICT PUBLIC WHITELIST
+        const teamStr = String(task.team || task.taskCategory || '').toLowerCase();
         
-        // Kill tasks explicitly labeled for Target Teams or Private
-        if (category.includes('target') || category.includes('private')) {
-            return false; 
+        // Allowed keywords that signify the task is open to general builder groups
+        const isPublicGroup = teamStr === '' || 
+                              teamStr === 'none' ||
+                              teamStr === 'null' ||
+                              teamStr.includes('core') || 
+                              teamStr.includes('trainee') || 
+                              teamStr.includes('vip') || 
+                              teamStr.includes('everyone');
+
+        // If the team/category is NOT one of those public groups (e.g. it's a specific name, UID, or "Target Team"), block it.
+        if (!isPublicGroup) {
+            return false;
         }
-        
-        // Kill tasks that are restricted to a whitelist of specific UIDs (Kills 1113 & 1112)
-        if (Array.isArray(task.uids) && task.uids.length > 0) return false;
-        if (Array.isArray(task.targetUids) && task.targetUids.length > 0) return false;
 
         return true; 
     });
@@ -144,8 +149,7 @@ async function handleCommand(chatId, text) {
                           `🧹 *Data Filter:* Active (Ended & private tasks removed, open tasks only)\n\n` +
                           `🛠️ *Commands:*\n` +
                           `🔹 /start - View this setup menu and bot capabilities.\n` +
-                          `🔹 /scan - Force an immediate manual check for live tasks.\n\n` +
-                          `— @Asiwaju`;
+                          `🔹 /scan - Force an immediate manual check for live tasks.`;
                             
         await sendMessage(chatId, startMenu);
     } 
