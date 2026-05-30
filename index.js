@@ -1,28 +1,24 @@
 require('dotenv').config();
 const fetch = require('node-fetch');
-const fs = require('fs');
-const path = require('path');
 const express = require('express');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_IDS = process.env.CHAT_ID ? process.env.CHAT_ID.split(',') : [];
 const PORT = process.env.PORT || 3000;
-const CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes
-const CACHE_FILE = path.join(__dirname, 'past_tasks.json');
 
-let offset = 0; // Tracks Telegram message updates
+// UPGRADE: Changed to 1 minute
+const CHECK_INTERVAL = 1 * 60 * 1000; 
 
-// 1. Initialize Dummy Web Server for Render Health Checks
+let offset = 0;
+let seenTasks = new Set(); // UPGRADE: In-memory storage replaces the JSON file
+let isFirstBoot = true;    // UPGRADE: Silent boot flag
+
+// 1. Initialize Dummy Web Server
 const app = express();
-app.get('/', (req, res) => res.send('Bitget Watcher Bot is running cleanly with commands enabled.'));
+app.get('/', (req, res) => res.send('Bitget Watcher Bot is running (1-min intervals).'));
 app.listen(PORT, () => console.log(`Health check server listening on port ${PORT}`));
 
-// 2. Ensure cache file exists
-if (!fs.existsSync(CACHE_FILE)) {
-    fs.writeFileSync(CACHE_FILE, JSON.stringify([]));
-}
-
-// 3. Helper to send a direct message to a specific user
+// 2. Telegram Message Helper
 async function sendMessage(chatId, text) {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
     try {
@@ -41,7 +37,7 @@ async function sendMessage(chatId, text) {
     }
 }
 
-// 4. Fetch Campaigns from Bitget Builder API
+// 3. Fetch Campaigns API
 async function fetchCampaigns() {
     const response = await fetch("https://api.bitgetbuilder.com/server/campaigns", {
         "headers": {
@@ -53,106 +49,113 @@ async function fetchCampaigns() {
     });
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     const data = await response.json();
-    
-    // UPDATED LOGIC: Tell the bot to look specifically inside the 'campaigns' property
     return Array.isArray(data.campaigns) ? data.campaigns : (Array.isArray(data) ? data : []);
 }
 
-// 5. Automatic Broadcast Task Scanner (Runs every 5 minutes)
+// 4. 1-Minute Auto Scanner (Detailed & Silent on Boot)
 async function scanTasksAutomatic() {
-    console.log(`[${new Date().toLocaleTimeString()}] Running automatic background scan...`);
+    console.log(`[${new Date().toLocaleTimeString()}] Running 1-minute auto scan...`);
     try {
         const dynamicTasks = await fetchCampaigns();
-        let seenTasks = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
         let foundNewTask = false;
 
         for (const task of dynamicTasks) {
-            if (task.id && !seenTasks.includes(task.id)) {
-                seenTasks.push(task.id);
-                foundNewTask = true;
+            if (task.id && !seenTasks.has(task.id)) {
+                // Memorize the task ID
+                seenTasks.add(task.id);
 
-                // Broadcast to all connected builders
-                const message = `🚨 *New Bitget Builder Task Available!* 🚨\n\n` +
-                                `📌 *Title:* ${task.title || 'Untitled Campaign'}\n` +
-                                `🆔 *ID:* ${task.id || 'N/A'}\n\n` +
-                                `🔗 [Open Builder Hub](https://www.bitgetbuilder.com/)`;
+                // UPGRADE: Only send alerts if this is NOT the bot's first time waking up
+                if (!isFirstBoot) {
+                    foundNewTask = true;
+                    
+                    // Fallback to 'N/A' if the Bitget API uses slightly different keys for details
+                    const taskTitle = task.title || task.name || task.taskCategory || 'Untitled Campaign';
+                    const taskTeam = task.team || task.assignedBy || 'N/A';
+                    const maxContent = task.maxContent || task.fcfs || 'N/A';
 
-                for (const chatId of CHAT_IDS) {
-                    await sendMessage(chatId.trim(), message);
+                    const message = `🚨 *New Bitget Builder Task!* 🚨\n\n` +
+                                    `📌 *Name:* ${taskTitle}\n` +
+                                    `🆔 *ID:* \`${task.id}\`\n` +
+                                    `👥 *Team:* ${taskTeam}\n` +
+                                    `⚡ *Limit/FCFS:* ${maxContent}\n\n` +
+                                    `🔗 [Open Builder Hub](https://www.bitgetbuilder.com/)`;
+
+                    for (const chatId of CHAT_IDS) {
+                        await sendMessage(chatId.trim(), message);
+                    }
                 }
             }
         }
 
-        if (foundNewTask) {
-            fs.writeFileSync(CACHE_FILE, JSON.stringify(seenTasks, null, 2));
-        } else {
-            console.log('No new tasks found during background scan.');
+        // Handle the Boot State Logging
+        if (isFirstBoot) {
+            console.log(`Silent boot complete. Memorized ${seenTasks.size} existing tasks without spamming.`);
+            isFirstBoot = false; // Turn off silent mode forever until next reboot
+        } else if (!foundNewTask) {
+            console.log('No new tasks found this minute.');
         }
+
     } catch (error) {
         console.error('Automatic scan failed:', error.message);
     }
 }
 
-// 6. Handle Incoming Commands (/start and /scan)
+// 5. Handle Incoming Commands
 async function handleCommand(chatId, text) {
     const cleanText = text.trim().toLowerCase();
 
     if (cleanText === '/start') {
-        const welcomeMessage = `⚡ *Welcome to BuildersWatcherBot!* ⚡\n\n` +
-                               `I am a sharp, high-speed automated task tracker built solely to monitor the *Bitget Builder Hub* for new opportunities.\n\n` +
-                               `⚙️ *What I do:* \n` +
-                               `• *Auto Scanning:* I check the API every 5 minutes and instantly broadcast new tasks to all connected builders.\n` +
-                               `• *Manual Control:* You can request an instant real-time lookup whenever you want.\n\n` +
-                               `🛠️ *Available Commands:* \n` +
-                               `• /start - View this setup menu and bot capabilities.\n` +
-                               `• /scan - Force an immediate, real-time manual check for live tasks.`;
+        const welcomeMessage = `⚡ *BuildersWatcherBot Ready* ⚡\n\n` +
+                               `I am an automated task tracker monitoring the *Bitget Builder Hub*.\n\n` +
+                               `⚙️ *Settings:* \n` +
+                               `• *Auto Scan:* Every 1 minute.\n` +
+                               `• *Silent Boot:* Enabled (No spam on server restart).\n\n` +
+                               `🛠️ *Commands:* \n` +
+                               `• /start - View this menu.\n` +
+                               `• /scan - View a clean list of currently available tasks.`;
         await sendMessage(chatId, welcomeMessage);
     } 
     
     else if (cleanText === '/scan') {
-        await sendMessage(chatId, `🔍 *Initiating immediate manual scan...*`);
+        await sendMessage(chatId, `🔍 *Checking live tasks...*`);
         try {
             const dynamicTasks = await fetchCampaigns();
             
             if (dynamicTasks.length === 0) {
-                await sendMessage(chatId, `⏸️ *Status:* There are no ongoing campaigns or available tasks at the moment.\n\n🔗 [Check Manually](https://www.bitgetbuilder.com/)`);
+                await sendMessage(chatId, `⏸️ *Status:* There are no active tasks right now.`);
                 return;
             }
 
-            let reportMessage = `✅ *Live Campaigns Found!*\n\nHere are the tasks currently active on the dashboard:\n\n`;
+            // UPGRADE: Simple layout just for manual scanning
+            let reportMessage = `✅ *Live Campaigns Available:*\n\n`;
             for (const task of dynamicTasks) {
-                reportMessage += `📌 *Title:* ${task.title || 'Untitled Campaign'}\n🆔 *ID:* \`${task.id || 'N/A'}\`\n\n`;
+                const taskTitle = task.title || task.name || task.taskCategory || 'Untitled Task';
+                reportMessage += `📌 *${taskTitle}*\n🆔 \`${task.id || 'N/A'}\`\n\n`;
             }
-            reportMessage += `🔗 [Open Builder Hub](https://www.bitgetbuilder.com/)`;
+            reportMessage += `🔗 [Check Manually](https://www.bitgetbuilder.com/)`;
             await sendMessage(chatId, reportMessage);
 
         } catch (error) {
-            await sendMessage(chatId, `❌ *Error processing manual scan:* ${error.message}`);
+            await sendMessage(chatId, `❌ *Error:* ${error.message}`);
         }
     }
 }
 
-// 7. Long Polling Engine to Listen for Telegram Messages
+// 6. Long Polling Command Listener
 async function listenForCommands() {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates?offset=${offset}&timeout=30`;
     try {
         const response = await fetch(url);
-        if (!response.ok) return setTimeout(listenForCommands, 5000); // Wait and retry on error
+        if (!response.ok) return setTimeout(listenForCommands, 5000);
 
         const data = await response.json();
         if (data.ok && data.result.length > 0) {
             for (const update of data.result) {
-                offset = update.update_id + 1; // Increment offset so we don't process this message again
-                
+                offset = update.update_id + 1; 
                 if (update.message && update.message.text) {
                     const chatId = update.message.chat.id.toString();
-                    
-                    // Check if the user is authorized in your CHAT_ID whitelist
                     if (CHAT_IDS.map(id => id.trim()).includes(chatId)) {
                         await handleCommand(chatId, update.message.text);
-                    } else {
-                        // Optional: Alert unauthorized users
-                        await sendMessage(chatId, "⚠️ You are not authorized to use this bot instance.");
                     }
                 }
             }
@@ -160,11 +163,10 @@ async function listenForCommands() {
     } catch (err) {
         console.error("Polling error:", err.message);
     }
-    // Re-call immediately to maintain open polling pipe
     setTimeout(listenForCommands, 500);
 }
 
-// Start Engines
-scanTasksAutomatic();              // Run once on launch
-setInterval(scanTasksAutomatic, CHECK_INTERVAL); // Schedule auto scan
-listenForCommands();               // Boot command listener loop
+// Boot Sequence
+scanTasksAutomatic();              // Run silent boot scan immediately
+setInterval(scanTasksAutomatic, CHECK_INTERVAL); // Start 1-minute loop
+listenForCommands();               // Listen for /scan and /start
