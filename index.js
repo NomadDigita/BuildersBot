@@ -1,5 +1,5 @@
 require('dotenv').config();
-const fetch = require('node-fetch'); // Restored to prevent "fetch is not defined" crashes
+const fetch = require('node-fetch'); // Standardized fetch import
 const express = require('express');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -9,7 +9,6 @@ const PORT = process.env.PORT || 3000;
 // Configurable Task Filter: 'automatic', 'manual', or 'both'
 const TASK_CHECK_TYPE = (process.env.TASK_CHECK_TYPE || 'both').toLowerCase().trim();
 
-// Setup headers for login session (Render environment variables)
 const SESSION_COOKIE = process.env.SESSION_COOKIE || '';
 const AUTHORIZATION_HEADER = process.env.AUTHORIZATION || '';
 
@@ -31,12 +30,20 @@ function escapeHTML(str) {
         .replace(/>/g, '&gt;');
 }
 
-// 1. Initialize Render Health Check Server
+// Robust date parser for (GMT+8) formats
+function parseTaskDate(dateStr) {
+    if (!dateStr) return 0;
+    const cleanStr = String(dateStr).replace(/\(GMT[+-]\d+\)/i, '').trim();
+    const parsed = Date.parse(cleanStr);
+    return isNaN(parsed) ? 0 : parsed;
+}
+
+// Initialize Render Health Check Server
 const app = express();
 app.get('/', (req, res) => res.send('BuildersWatcherBot is online.'));
 app.listen(PORT, () => console.log(`Health check server listening on port ${PORT}`));
 
-// 2. Telegram Message Engine (HTML Parse Mode)
+// Telegram Message Engine
 async function sendMessage(chatId, text) {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
     try {
@@ -59,46 +66,35 @@ async function sendMessage(chatId, text) {
     }
 }
 
-// UID Checker
+// Strict UID Checker matching the API schema
 function hasSpecificUIDs(task) {
-    const uidKeys = [
-        'uid', 'uids', 'uidlist', 'uid_list', 'targetuids', 'target_uids',
-        'whitelist', 'white_list', 'assigneduids', 'assigned_uids', 
-        'userids', 'user_ids', 'memberlist', 'member_list', 'specified_uids',
-        'specifieduids', 'assignuids', 'assign_uids', 'specified'
-    ];
-
-    for (const key of Object.keys(task)) {
-        const lowerKey = key.toLowerCase();
-        
-        if (uidKeys.some(uKey => lowerKey.includes(uKey))) {
-            const val = task[key];
-            if (Array.isArray(val) && val.length > 0) return true;
-            if (typeof val === 'string' && val.trim().length > 0 && /\d+/.test(val)) return true;
-            if (typeof val === 'number') return true;
-        }
+    // 1. If automatic UIDs are assigned
+    const autoUids = task.autoSelectedUIDs;
+    if (autoUids) {
+        if (Array.isArray(autoUids) && autoUids.length > 0) return true;
+        if (typeof autoUids === 'string' && autoUids.trim().length > 0) return true;
+    }
+    
+    // 2. If manual UIDs are assigned
+    const manualUids = task.manualSelectedUIDs;
+    if (manualUids) {
+        if (Array.isArray(manualUids) && manualUids.length > 0) return true;
+        if (typeof manualUids === 'string' && manualUids.trim().length > 0) return true;
     }
 
-    const descStr = String(task.description || task.content || '').toLowerCase();
-    if (descStr.includes('specific uid') || 
-        descStr.includes('whitelist only') || 
-        descStr.includes('target uid') || 
-        descStr.includes('selected uid') || 
-        descStr.includes('only for uids')) {
-        return true;
-    }
+    // 3. If manual selected boolean is flagged
+    if (task.manualSelected === true) return true;
 
     return false;
 }
 
-// Check Type Matcher
+// Check Type Matcher (Automatic vs Manual verification check)
 function matchesTaskCheckType(task) {
     if (TASK_CHECK_TYPE === 'both') return true;
 
-    const isAutoCheck = task.isAuto === true || 
-                        task.auto === true || 
-                        task.autoCheck === true || 
-                        String(task.checkType || task.type || task.auditType || '').toLowerCase().includes('auto');
+    // Evaluate auto properties
+    const isAutoCheck = task.autoSelectedUIDs !== undefined || 
+                        String(task.taskCategory || '').toLowerCase().includes('auto');
 
     if (TASK_CHECK_TYPE === 'automatic') return isAutoCheck;
     if (TASK_CHECK_TYPE === 'manual') return !isAutoCheck;
@@ -129,30 +125,29 @@ async function fetchRawCampaigns() {
     return Array.isArray(data.campaigns) ? data.campaigns : (Array.isArray(data) ? data : []);
 }
 
-// Filter engine
+// Cleaned and fully targeted Filter Engine
 async function fetchCampaigns() {
     const allTasks = await fetchRawCampaigns();
     
-    // Sort descending
+    // SORT BY DEADLINE DESCENDING (Future/active deadlines will be at the very top of the list)
     allTasks.sort((a, b) => {
-        const idA = parseInt(String(a.id).replace(/\D/g, '')) || 0;
-        const idB = parseInt(String(b.id).replace(/\D/g, '')) || 0;
-        return idB - idA;
+        const timeA = parseTaskDate(a.deadline);
+        const timeB = parseTaskDate(b.deadline);
+        return timeB - timeA;
     });
 
     return allTasks.filter(task => {
-        const dueStr = task.endTime || task.end_time || task.dueDate || task.deadline || task.due;
+        // 1. Time Check (Ongoing check)
+        const dueStr = task.deadline;
         if (dueStr) {
-            const cleanDateStr = String(dueStr).replace(/\(GMT[+-]\d+\)/i, '').trim();
-            const endMs = new Date(cleanDateStr).getTime();
-            if (!isNaN(endMs) && endMs < Date.now()) return false; 
+            const endMs = parseTaskDate(dueStr);
+            if (endMs !== 0 && endMs < Date.now()) return false; 
         }
 
-        const statusStr = String(task.status || task.state || task.taskStatus || '').toLowerCase();
-        if (statusStr === 'ended' || statusStr === 'completed') return false;
-
-        const titleStr = String(task.title || task.name || '').toLowerCase();
-        const teamStr = String(task.team || task.taskCategory || '').toLowerCase().trim();
+        // 2. Blacklist / Name filter
+        const titleStr = String(task.title || '').toLowerCase();
+        const categoryStr = String(task.taskCategory || '').toLowerCase();
+        const teamStr = String(task.targetTeam || task.targetLabel || '').toLowerCase();
 
         if (titleStr.includes('(cmc)') || 
             titleStr.includes('winner') || 
@@ -162,6 +157,7 @@ async function fetchCampaigns() {
             return false; 
         }
 
+        // 3. Strict Whitelist (Core, Trainee, VIP roles only)
         const isTargetedGroup = teamStr === '' || 
                                teamStr === 'none' || 
                                teamStr === 'null' || 
@@ -172,71 +168,53 @@ async function fetchCampaigns() {
                                teamStr.includes('open');
 
         if (!isTargetedGroup) return false; 
+
+        // 4. Reject any targeted user restriction (Specific UIDs)
         if (hasSpecificUIDs(task)) return false;
+
+        // 5. Automatic vs Manual task toggle
         if (!matchesTaskCheckType(task)) return false;
 
         return true; 
     });
 }
 
-// Live In-Chat Diagnostic Generator
+// In-Chat Diagnostic Generator
 async function getTaskFilteringReport() {
     try {
         const allTasks = await fetchRawCampaigns();
         
         if (allTasks.length === 0) {
-            return `⚠️ <b>API returned 0 tasks.</b>\n\n` +
-                   `This means the API rejected Render's request because you are not logged in.\n\n` +
-                   `💡 <b>How to Fix:</b>\n` +
-                   `1. Log in to the site on your computer browser.\n` +
-                   `2. Open Inspect -> Network -> select the <code>campaigns</code> request.\n` +
-                   `3. Copy the <code>Cookie</code> or <code>Authorization</code> header.\n` +
-                   `4. Go to Render Dashboard -> Environment -> Add <code>SESSION_COOKIE</code> or <code>AUTHORIZATION</code> variable.`;
+            return `⚠️ <b>API returned 0 tasks.</b>\n\nEnsure your session cookie is correctly added in Render.`;
         }
 
-        let report = `📊 <b>Diagnostic Filter Report</b>\n`;
+        // Sort descending
+        allTasks.sort((a, b) => {
+            const timeA = parseTaskDate(a.deadline);
+            const timeB = parseTaskDate(b.deadline);
+            return timeB - timeA;
+        });
+
+        let report = `📊 <b>Diagnostic Filter Report (Sorted by Deadline)</b>\n`;
         report += `Total Raw Tasks Fetched: <b>${allTasks.length}</b>\n\n`;
 
-        // Audit the top 5 tasks to see why they passed or failed
         const sampleTasks = allTasks.slice(0, 5);
         for (const task of sampleTasks) {
             const taskId = task.id || 'N/A';
-            const title = task.title || task.name || 'Untitled';
+            const title = task.title || 'Untitled';
             let status = "✅ PASSED";
             let reason = "";
 
-            // 1. Time
-            const dueStr = task.endTime || task.end_time || task.dueDate || task.deadline || task.due;
+            const dueStr = task.deadline;
             if (dueStr) {
-                const cleanDateStr = String(dueStr).replace(/\(GMT[+-]\d+\)/i, '').trim();
-                const endMs = new Date(cleanDateStr).getTime();
-                if (!isNaN(endMs) && endMs < Date.now()) {
+                const endMs = parseTaskDate(dueStr);
+                if (endMs !== 0 && endMs < Date.now()) {
                     status = "❌ SKIPPED";
-                    reason = `Time expired`;
+                    reason = `Time expired (${dueStr})`;
                 }
             }
 
-            // 2. Status Check
-            if (status === "✅ PASSED") {
-                const statusStr = String(task.status || task.state || task.taskStatus || '').toLowerCase();
-                if (statusStr === 'ended' || statusStr === 'completed') {
-                    status = "❌ SKIPPED";
-                    reason = `Status is "${statusStr}"`;
-                }
-            }
-
-            // 3. Blacklist Check
-            if (status === "✅ PASSED") {
-                const titleStr = String(task.title || task.name || '').toLowerCase();
-                const teamStr = String(task.team || task.taskCategory || '').toLowerCase().trim();
-                if (titleStr.includes('(cmc)') || titleStr.includes('winner') || titleStr.includes('reddit') || teamStr.includes('target') || teamStr.includes('private')) {
-                    status = "❌ SKIPPED";
-                    reason = `Hit word blacklist`;
-                }
-            }
-
-            // 4. Group check
-            const teamStr = String(task.team || task.taskCategory || '').toLowerCase().trim();
+            const teamStr = String(task.targetTeam || task.targetLabel || '').toLowerCase();
             if (status === "✅ PASSED") {
                 const isTargetedGroup = teamStr === '' || teamStr === 'none' || teamStr === 'null' || teamStr.includes('core') || teamStr.includes('trainee') || teamStr.includes('vip') || teamStr.includes('everyone') || teamStr.includes('open');
                 if (!isTargetedGroup) {
@@ -245,13 +223,11 @@ async function getTaskFilteringReport() {
                 }
             }
 
-            // 5. Specific UIDs check
             if (status === "✅ PASSED" && hasSpecificUIDs(task)) {
                 status = "❌ SKIPPED";
-                reason = `UID restriction / whitelist detected`;
+                reason = `UID restriction detected`;
             }
 
-            // 6. Check Type Match
             if (status === "✅ PASSED" && !matchesTaskCheckType(task)) {
                 status = "❌ SKIPPED";
                 reason = `Check type mismatches filter`;
@@ -261,17 +237,13 @@ async function getTaskFilteringReport() {
             report += `Result: ${status} ${reason ? `(${reason})` : ''}\n\n`;
         }
 
-        if (allTasks[0]) {
-            report += `🔑 <b>First Task JSON Keys:</b>\n<code>${Object.keys(allTasks[0]).join(', ')}</code>\n`;
-        }
-
         return report;
     } catch (err) {
         return `❌ <b>Diagnostic Error:</b> ${escapeHTML(err.message)}`;
     }
 }
 
-// 4. Autonomous 1-Minute Scanner
+// Autonomous 1-Minute Scanner
 async function scanTasksAutomatic() {
     console.log(`[${new Date().toLocaleTimeString()}] Running automated node scan...`);
     try {
@@ -285,9 +257,9 @@ async function scanTasksAutomatic() {
                 if (!isFirstBoot) {
                     foundNewTask = true;
                     
-                    const taskTitle = task.title || task.name || task.taskCategory || 'Untitled Campaign';
-                    const due = task.endTime || task.end_time || task.dueDate || task.deadline || 'Time Not Specified';
-                    const taskType = task.maxContent ? `Max Content: ${task.maxContent}` : (task.fcfs ? 'FCFS' : 'Open Task');
+                    const taskTitle = task.title || 'Untitled Campaign';
+                    const due = task.deadline || 'Time Not Specified';
+                    const taskType = task.maxContent ? `Max Content: ${task.maxContent}` : 'Open Task';
 
                     const message = `🚨 <b>NEW ONGOING TASK</b> 🚨\n\n` +
                                     `📌 <b>Title:</b> ${escapeHTML(taskTitle)}\n` +
@@ -315,7 +287,7 @@ async function scanTasksAutomatic() {
     }
 }
 
-// 5. Command Terminal
+// Command Terminal
 async function handleCommand(chatId, text) {
     const cleanText = text.trim().toLowerCase();
 
@@ -346,9 +318,9 @@ async function handleCommand(chatId, text) {
             let reportMessage = `✅ <b>Active Ongoing Tasks Found (${activeTasks.length}):</b>\n\n`;
             
             for (const task of displayTasks) {
-                const taskTitle = task.title || task.name || task.taskCategory || 'Untitled Task';
-                const due = task.endTime || task.end_time || task.dueDate || task.deadline || 'Time Not Specified';
-                const taskType = task.maxContent ? `Max Content: ${task.maxContent}` : (task.fcfs ? 'FCFS' : 'Open Task');
+                const taskTitle = task.title || 'Untitled Task';
+                const due = task.deadline || 'Time Not Specified';
+                const taskType = task.maxContent ? `Max Content: ${task.maxContent}` : 'Open Task';
 
                 reportMessage += `📌 <b>Title:</b> ${escapeHTML(taskTitle)}\n`;
                 reportMessage += `🆔 <b>ID:</b> <code>${task.id || 'N/A'}</code>\n`;
@@ -369,7 +341,7 @@ async function handleCommand(chatId, text) {
     }
 }
 
-// 6. Long Polling Command Listener
+// Long Polling Command Listener
 async function listenForCommands() {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates?offset=${offset}&timeout=30`;
     try {
