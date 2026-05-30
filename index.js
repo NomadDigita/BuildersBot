@@ -53,7 +53,9 @@ async function fetchCampaigns() {
     });
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     const data = await response.json();
-    return Array.isArray(data) ? data : (data.data || []);
+    
+    // UPDATED LOGIC: Tell the bot to look specifically inside the 'campaigns' property
+    return Array.isArray(data.campaigns) ? data.campaigns : (Array.isArray(data) ? data : []);
 }
 
 // 5. Automatic Broadcast Task Scanner (Runs every 5 minutes)
