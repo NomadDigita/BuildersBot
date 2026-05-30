@@ -65,27 +65,25 @@ async function fetchCampaigns() {
             const endMs = new Date(dueStr).getTime();
             if (endMs < Date.now()) return false; 
         }
-
-        const str = JSON.stringify(task).toLowerCase();
         
-        // RULE 2: Kill tasks marked as ended or submitted (Using number codes & strings)
-        if (str.includes('"status":2') || 
-            str.includes('"status":3') || 
-            str.includes('"state":2') || 
-            str.includes('ended') || 
-            str.includes('submitted')) {
+        // RULE 2: Kill tasks explicitly marked as ended (NO MORE STRINGIFY SEARCH!)
+        const statusStr = String(task.status || task.state || task.taskStatus || '').toLowerCase();
+        if (statusStr === 'ended' || statusStr === 'completed' || statusStr === '2' || statusStr === '3') {
             return false;
         }
 
         // RULE 3: PUBLIC ONLY FILTER
-        // Strictly filter by "target" or "private" tags. (Core Builder & Trainee are safe!)
         const category = String(task.taskCategory || task.team || '').toLowerCase();
+        
+        // Kill tasks explicitly labeled for Target Teams or Private
         if (category.includes('target') || category.includes('private')) {
             return false; 
         }
         
-        // ALL UID/ASSIGNEE ARRAY CHECKS HAVE BEEN DELETED TO PROTECT TASK 1094.
-        
+        // Kill tasks that are restricted to a whitelist of specific UIDs (Kills 1113 & 1112)
+        if (Array.isArray(task.uids) && task.uids.length > 0) return false;
+        if (Array.isArray(task.targetUids) && task.targetUids.length > 0) return false;
+
         return true; 
     });
 }
