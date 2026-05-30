@@ -59,7 +59,7 @@ async function fetchCampaigns() {
     });
 
     return allTasks.filter(task => {
-        // RULE 1: Clean Time Check
+        // RULE 1: Time Check
         const dueStr = task.endTime || task.end_time || task.dueDate || task.deadline || task.due;
         if (dueStr) {
             const cleanDateStr = String(dueStr).replace(/\(GMT[+-]\d+\)/i, '').trim();
@@ -67,34 +67,39 @@ async function fetchCampaigns() {
             if (!isNaN(endMs) && endMs < Date.now()) return false; 
         }
 
-        // RULE 2: Status Check (Only explicitly marked ended)
+        // RULE 2: Status Check
         const statusStr = String(task.status || task.state || task.taskStatus || '').toLowerCase();
         if (statusStr === 'ended' || statusStr === 'completed') {
             return false;
         }
 
-        // RULE 3: THE STRICT BLACKLIST (Kills CMC, Winners, and targeted UIDs)
+        // RULE 3: THE EXPLICIT BLACKLIST (Kills specific targeted noise)
         const titleStr = String(task.title || task.name || '').toLowerCase();
         const teamStr = String(task.team || task.taskCategory || '').toLowerCase().trim();
         const taskStr = JSON.stringify(task).toLowerCase();
 
-        if (titleStr.includes('(cmc)') || titleStr.includes('winner') || titleStr.includes('private')) return false;
-        if (teamStr.includes('target') || taskStr.includes('"target team"')) return false;
-        
-        if (Array.isArray(task.uids) && task.uids.length > 0) return false;
-        if (Array.isArray(task.targetUids) && task.targetUids.length > 0) return false;
-        // NOTICE: "assignees" is purposefully ignored so tasks built by 'Clyde' survive.
+        if (titleStr.includes('(cmc)') || 
+            titleStr.includes('winner') || 
+            titleStr.includes('reddit') || 
+            teamStr.includes('target') || 
+            taskStr.includes('"target team"') || 
+            taskStr.includes('private')) {
+            return false; 
+        }
 
         // RULE 4: THE STRICT PUBLIC WHITELIST
         // Task must explicitly contain core, trainee, vip, everyone, or be completely blank.
-        const isTeamBlank = (teamStr === '' || teamStr === 'none' || teamStr === 'null');
-        const isCore = taskStr.includes('core builder') || taskStr.includes('core');
-        const isTrainee = taskStr.includes('trainee');
-        const isVip = taskStr.includes('vip');
-        const isEveryone = taskStr.includes('everyone') || taskStr.includes('open');
+        const isPublic = teamStr === '' || 
+                         teamStr === 'none' || 
+                         teamStr === 'null' || 
+                         teamStr.includes('core') || 
+                         teamStr.includes('trainee') || 
+                         teamStr.includes('vip') || 
+                         teamStr.includes('everyone') || 
+                         teamStr.includes('open');
 
-        // If it doesn't match any of the open tags above, kill it (This kills the Reddit tasks)
-        if (!(isTeamBlank || isCore || isTrainee || isVip || isEveryone)) {
+        // If it doesn't match any of the open tags above, kill it.
+        if (!isPublic) {
             return false; 
         }
 
