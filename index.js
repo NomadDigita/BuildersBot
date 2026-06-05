@@ -6,6 +6,11 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_IDS = process.env.CHAT_ID ? process.env.CHAT_ID.split(',').map(id => id.trim()) : [];
 const PORT = process.env.PORT || 3000;
 
+// WhatsApp configuration variables
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || '';
+const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
+const WHATSAPP_RECIPIENTS = process.env.WHATSAPP_RECIPIENTS ? process.env.WHATSAPP_RECIPIENTS.split(',').map(num => num.trim()) : [];
+
 // Render automatically injects this environment variable in Web Services
 const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || ''; 
 
@@ -31,6 +36,25 @@ function escapeHTML(str) {
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
+}
+
+// Formats Telegram HTML templates into native WhatsApp formatting
+function convertToWhatsAppFormat(htmlText) {
+    let text = htmlText;
+    
+    // Convert <a> links: <a href="URL">Anchor</a> -> Anchor (URL)
+    text = text.replace(/<a href="([^"]+)">([^<]+)<\/a>/g, '$2 ($1)');
+    
+    // Replace bold tags
+    text = text.replace(/<\/?b>/g, '*');
+    
+    // Replace code tags
+    text = text.replace(/<\/?code>/g, '`');
+    
+    // Replace italic tags
+    text = text.replace(/<\/?i>/g, '_');
+    
+    return text;
 }
 
 // Fixed robust mathematical timezone parser to support exact offsets like (GMT+8)
@@ -126,6 +150,41 @@ async function sendMessage(chatId, text) {
         }
     } catch (err) {
         console.error(`Failed to send message to ${chatId}:`, err.message);
+    }
+}
+
+// WhatsApp Message Engine
+async function sendWhatsAppMessage(to, text) {
+    if (!WHATSAPP_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) return;
+    
+    const url = `https://graph.facebook.com/v20.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                messaging_product: "whatsapp",
+                recipient_type: "individual",
+                to: to,
+                type: "text",
+                text: {
+                    preview_url: false,
+                    body: text
+                }
+            })
+        });
+        
+        if (!response.ok) {
+            const errData = await response.json();
+            console.error(`WhatsApp API Error for ${to}:`, JSON.stringify(errData));
+        } else {
+            console.log(`WhatsApp notification successfully sent to ${to}`);
+        }
+    } catch (err) {
+        console.error(`Failed to send WhatsApp message to ${to}:`, err.message);
     }
 }
 
@@ -319,8 +378,17 @@ async function scanTasksAutomatic() {
                                     `⚡ <b>Type:</b> ${escapeHTML(taskType)}\n\n` +
                                     `🔗 <a href="https://www.bitgetbuilder.com/">Execute on Builder Hub</a>`;
 
+                    // Deliver message to Telegram Channels
                     for (const chatId of CHAT_IDS) {
                         await sendMessage(chatId, message);
+                    }
+
+                    // Deliver formatted message to WhatsApp Recipients
+                    if (WHATSAPP_RECIPIENTS.length > 0) {
+                        const waFormattedMsg = convertToWhatsAppFormat(message);
+                        for (const number of WHATSAPP_RECIPIENTS) {
+                            await sendWhatsAppMessage(number, waFormattedMsg);
+                        }
                     }
                 }
             }
