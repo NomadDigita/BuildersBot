@@ -10,6 +10,7 @@ const PORT = process.env.PORT || 3000;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || '';
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
 const WHATSAPP_RECIPIENTS = process.env.WHATSAPP_RECIPIENTS ? process.env.WHATSAPP_RECIPIENTS.split(',').map(num => num.trim()) : [];
+const WHATSAPP_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'my_secure_token'; // Configure this in your Meta Webhook setup
 
 // Render automatically injects this environment variable in Web Services
 const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || ''; 
@@ -25,7 +26,8 @@ if (!TELEGRAM_TOKEN) {
     process.exit(1);
 }
 
-const CHECK_INTERVAL = 1 * 60 * 1000; 
+// UPDATED: Changed from 1 minute to 10 seconds
+const CHECK_INTERVAL = 10 * 1000; 
 
 let offset = 0;
 let seenTasks = new Set(); 
@@ -41,23 +43,14 @@ function escapeHTML(str) {
 // Formats Telegram HTML templates into native WhatsApp formatting
 function convertToWhatsAppFormat(htmlText) {
     let text = htmlText;
-    
-    // Convert <a> links: <a href="URL">Anchor</a> -> Anchor (URL)
     text = text.replace(/<a href="([^"]+)">([^<]+)<\/a>/g, '$2 ($1)');
-    
-    // Replace bold tags
     text = text.replace(/<\/?b>/g, '*');
-    
-    // Replace code tags
     text = text.replace(/<\/?code>/g, '`');
-    
-    // Replace italic tags
     text = text.replace(/<\/?i>/g, '_');
-    
     return text;
 }
 
-// Fixed robust mathematical timezone parser to support exact offsets like (GMT+8)
+// Robust ISO-8601 timezone parser to support exact offsets like (GMT+8)
 function parseTaskDate(dateStr) {
     if (!dateStr) return 0;
     
@@ -110,9 +103,56 @@ function getCountdownString(deadlineStr) {
     return parts.join(' ');
 }
 
-// Initialize Render Health Check Server
+// Initialize Render Web Server
 const app = express();
+app.use(express.json()); // Vital body parser middleware to accept WhatsApp webhook JSON bodies
+
 app.get('/', (req, res) => res.send('BuildersWatcherBot is online.'));
+
+// 1. WhatsApp Webhook Verification Handshake (GET)
+app.get('/webhook', (req, res) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    if (mode === 'subscribe' && token === WHATSAPP_VERIFY_TOKEN) {
+        console.log('[WhatsApp Webhook] Verification successful!');
+        res.status(200).send(challenge);
+    } else {
+        console.warn('[WhatsApp Webhook] Verification token mismatch.');
+        res.sendStatus(403);
+    }
+});
+
+// 2. WhatsApp Incoming Webhook Message Handler (POST)
+app.post('/webhook', async (req, res) => {
+    const body = req.body;
+
+    if (body.object === 'whatsapp_business_account') {
+        try {
+            if (body.entry && body.entry[0].changes && body.entry[0].changes[0].value.messages) {
+                const message = body.entry[0].changes[0].value.messages[0];
+                const fromNumber = message.from; 
+                
+                // Secure check: verify that the sender is whitelisted
+                if (WHATSAPP_RECIPIENTS.includes(fromNumber)) {
+                    if (message.type === 'text') {
+                        const text = message.text.body.trim().toLowerCase();
+                        await handleWhatsAppCommand(fromNumber, text);
+                    }
+                } else {
+                    console.log(`[WhatsApp Webhook] Message from unauthorized number ignored: ${fromNumber}`);
+                }
+            }
+        } catch (err) {
+            console.error('[WhatsApp Webhook] Parsing error:', err.message);
+        }
+        res.sendStatus(200);
+    } else {
+        res.sendStatus(404);
+    }
+});
+
 app.listen(PORT, () => console.log(`Health check server listening on port ${PORT}`));
 
 // Self-Pinger to bypass Render's Free Tier sleep policy
@@ -124,7 +164,7 @@ function startSelfPinger() {
             fetch(RENDER_EXTERNAL_URL)
                 .then(res => console.log(`[Keep-Alive] Self-ping successful: HTTP ${res.status}`))
                 .catch(err => console.error(`[Keep-Alive] Self-ping failed:`, err.message));
-        }, 10 * 60 * 1000); // Ping every 10 minutes
+        }, 10 * 60 * 1000); 
     } else {
         console.warn("[Keep-Alive] RENDER_EXTERNAL_URL is not set. Self-pinger disabled.");
     }
@@ -153,7 +193,7 @@ async function sendMessage(chatId, text) {
     }
 }
 
-// WhatsApp Message Engine
+// WhatsApp Outbound Message Engine
 async function sendWhatsAppMessage(to, text) {
     if (!WHATSAPP_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) return;
     
@@ -351,7 +391,7 @@ async function getTaskFilteringReport() {
     }
 }
 
-// Autonomous 1-Minute Scanner
+// Autonomous Scanner (Runs on interval)
 async function scanTasksAutomatic() {
     console.log(`[${new Date().toLocaleTimeString()}] Running automated node scan...`);
     try {
@@ -406,14 +446,14 @@ async function scanTasksAutomatic() {
     }
 }
 
-// Command Terminal
+// Telegram Command Router
 async function handleCommand(chatId, text) {
     const cleanText = text.trim().toLowerCase();
 
     if (cleanText === '/start') {
         const startMenu = `⚡ <b>BuildersWatcherBot</b> ⚡\n\n` +
                           `⚙️ <b>System Settings:</b>\n` +
-                          `⏱️ <b>Auto Scan:</b> Every 1 minute\n` +
+                          `⏱️ <b>Auto Scan:</b> Every 10 seconds\n` +
                           `🧹 <b>Filter Mode:</b> Active (Role: Core/Trainee/VIP, Type: ${TASK_CHECK_TYPE.toUpperCase()}, Whitelisted UIDs: Excluded)\n\n` +
                           `🛠️ <b>Commands:</b>\n` +
                           `🔹 /start - View setup menu.\n` +
@@ -462,7 +502,56 @@ async function handleCommand(chatId, text) {
     }
 }
 
-// Long Polling Command Listener
+// WhatsApp Command Router (Processes incoming text from the Webhook)
+async function handleWhatsAppCommand(fromNumber, text) {
+    const cleanText = text.trim().toLowerCase();
+
+    if (cleanText === 'scan') {
+        await sendWhatsAppMessage(fromNumber, `🔍 *Scanning for ONGOING tasks...*`);
+        try {
+            const activeTasks = await fetchCampaigns();
+            
+            if (activeTasks.length === 0) {
+                const diagnosticReport = await getTaskFilteringReport();
+                const waDiag = convertToWhatsAppFormat(diagnosticReport);
+                await sendWhatsAppMessage(fromNumber, `⏸️ *Status:* Radar is clear. No active open tasks match.\n\n${waDiag}`);
+                return;
+            }
+
+            const displayTasks = activeTasks.slice(0, 15);
+            let reportMessage = `✅ *Active Ongoing Tasks Found (${activeTasks.length}):*\n\n`;
+            
+            for (const task of displayTasks) {
+                const taskTitle = task.title || 'Untitled Task';
+                const due = task.deadline || 'Time Not Specified';
+                const taskType = task.maxContent ? `Max Content: ${task.maxContent}` : 'Open Task';
+                const countdown = getCountdownString(due);
+
+                reportMessage += `📌 *Title:* ${taskTitle}\n`;
+                reportMessage += `🆔 *ID:* \`${task.id || 'N/A'}\`\n`;
+                reportMessage += `⏳ *Ends:* ${due}\n`;
+                reportMessage += `⏱️ *Time Left:* \`${countdown}\`\n`;
+                reportMessage += `⚡ *Type:* ${taskType}\n\n`;
+            }
+            
+            if (activeTasks.length > 15) {
+                reportMessage += `_(...and ${activeTasks.length - 15} more hidden to save space)_\n\n`;
+            }
+
+            reportMessage += `🔗 *Access Builder Hub (https://www.bitgetbuilder.com/)*`;
+            await sendWhatsAppMessage(fromNumber, reportMessage);
+
+        } catch (error) {
+            await sendWhatsAppMessage(fromNumber, `❌ *Query Error:* ${error.message}`);
+        }
+    } else {
+        const helpMenu = `⚡ *BuildersWatcherBot* ⚡\n\n` +
+                         `Type *scan* to force an immediate manual check for live tasks.`;
+        await sendWhatsAppMessage(fromNumber, helpMenu);
+    }
+}
+
+// Long Polling Telegram Command Listener
 async function listenForCommands() {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates?offset=${offset}&timeout=30`;
     try {
