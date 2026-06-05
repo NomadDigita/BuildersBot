@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || '';
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
 const WHATSAPP_RECIPIENTS = process.env.WHATSAPP_RECIPIENTS ? process.env.WHATSAPP_RECIPIENTS.split(',').map(num => num.trim()) : [];
-const WHATSAPP_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'my_secure_token'; // Configure this in your Meta Webhook setup
+const WHATSAPP_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'my_secure_token'; 
 
 // Render automatically injects this environment variable in Web Services
 const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || ''; 
@@ -26,7 +26,6 @@ if (!TELEGRAM_TOKEN) {
     process.exit(1);
 }
 
-// UPDATED: Changed from 1 minute to 10 seconds
 const CHECK_INTERVAL = 10 * 1000; 
 
 let offset = 0;
@@ -56,24 +55,21 @@ function parseTaskDate(dateStr) {
     
     const tzMatch = String(dateStr).match(/\(GMT([+-]\d+)\)/i);
     let cleanStr = String(dateStr).replace(/\(GMT[+-]\d+\)/i, '').trim();
+    const normalized = cleanStr.replace(/\//g, '-').replace(' ', 'T');
     
-    // Normalize format natively
-    let parsedMs = Date.parse(cleanStr);
-    if (isNaN(parsedMs)) {
-        parsedMs = Date.parse(cleanStr.replace(/\//g, '-'));
-    }
-    
-    if (isNaN(parsedMs)) return 0;
-
     if (tzMatch) {
-        const offsetHours = parseInt(tzMatch[1], 10);
-        const localOffsetMs = new Date().getTimezoneOffset() * 60 * 1000;
-        const utcMs = parsedMs - localOffsetMs;
-        const targetOffsetMs = offsetHours * 60 * 60 * 1000;
-        return utcMs - targetOffsetMs;
+        const offsetNum = parseInt(tzMatch[1], 10);
+        const sign = offsetNum >= 0 ? '+' : '-';
+        const absoluteOffset = Math.abs(offsetNum);
+        const formattedOffset = `${sign}${String(absoluteOffset).padStart(2, '0')}:00`;
+        
+        const isoString = `${normalized}:00${formattedOffset}`;
+        const parsed = Date.parse(isoString);
+        return isNaN(parsed) ? 0 : parsed;
     }
     
-    return parsedMs;
+    const parsed = Date.parse(normalized);
+    return isNaN(parsed) ? 0 : parsed;
 }
 
 // Generates a professional countdown string
@@ -105,7 +101,7 @@ function getCountdownString(deadlineStr) {
 
 // Initialize Render Web Server
 const app = express();
-app.use(express.json()); // Vital body parser middleware to accept WhatsApp webhook JSON bodies
+app.use(express.json()); 
 
 app.get('/', (req, res) => res.send('BuildersWatcherBot is online.'));
 
@@ -134,7 +130,6 @@ app.post('/webhook', async (req, res) => {
                 const message = body.entry[0].changes[0].value.messages[0];
                 const fromNumber = message.from; 
                 
-                // Secure check: verify that the sender is whitelisted
                 if (WHATSAPP_RECIPIENTS.includes(fromNumber)) {
                     if (message.type === 'text') {
                         const text = message.text.body.trim().toLowerCase();
@@ -193,11 +188,11 @@ async function sendMessage(chatId, text) {
     }
 }
 
-// WhatsApp Outbound Message Engine
+// WhatsApp Outbound Message Engine (UPDATED: API endpoint targeted to v25.0)
 async function sendWhatsAppMessage(to, text) {
     if (!WHATSAPP_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) return;
     
-    const url = `https://graph.facebook.com/v20.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
+    const url = `https://graph.facebook.com/v25.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
     try {
         const response = await fetch(url, {
             method: 'POST',
@@ -530,7 +525,7 @@ async function handleWhatsAppCommand(fromNumber, text) {
                 reportMessage += `📌 *Title:* ${taskTitle}\n`;
                 reportMessage += `🆔 *ID:* \`${task.id || 'N/A'}\`\n`;
                 reportMessage += `⏳ *Ends:* ${due}\n`;
-                reportMessage += `⏱️ *Time Left:* \`${countdown}\`\n`;
+                reportMessage += `⏱ *Time Left:* \`${countdown}\`\n`;
                 reportMessage += `⚡ *Type:* ${taskType}\n\n`;
             }
             
