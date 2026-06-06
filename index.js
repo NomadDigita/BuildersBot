@@ -99,6 +99,42 @@ function getCountdownString(deadlineStr) {
     return parts.join(' ');
 }
 
+// Safely parses and extracts structured reward tiers from campaign details
+function extractRewards(details) {
+    if (!details) return 'Not Specified';
+    
+    // Remove raw HTML tags to prevent message body formatting breaks
+    const cleanText = String(details).replace(/<[^>]*>/g, '');
+    const lines = cleanText.split('\n');
+    
+    const rewardLines = lines.map(line => line.trim()).filter(line => {
+        const lower = line.toLowerCase();
+        return (lower.includes('$') || lower.includes('usdt')) && 
+               (lower.includes('trainee') || lower.includes('builder') || lower.includes('vip') || lower.includes('reward'));
+    });
+    
+    if (rewardLines.length > 0) {
+        return rewardLines.join(' | ');
+    }
+    
+    // Fallback: search for any text lines containing currency signs
+    const fallbackLines = lines.map(line => line.trim()).filter(line => line.includes('$') || line.toUpperCase().includes('USDT'));
+    if (fallbackLines.length > 0) {
+        return fallbackLines.slice(0, 3).join(' | ');
+    }
+    
+    return 'Not Specified';
+}
+
+// Determines if a task has an FCFS capacity limit
+function getTaskTypeString(task) {
+    const fcfs = task.fcfsLimit;
+    if (fcfs && String(fcfs).trim() !== '-' && !isNaN(parseInt(fcfs))) {
+        return `FCFS (Limit: ${parseInt(fcfs)} builders)`;
+    }
+    return task.maxContent ? `Max Content: ${task.maxContent}` : 'Open Task';
+}
+
 // Initialize Render Web Server
 const app = express();
 app.use(express.json()); 
@@ -402,15 +438,17 @@ async function scanTasksAutomatic() {
                     
                     const taskTitle = task.title || 'Untitled Campaign';
                     const due = task.deadline || 'Time Not Specified';
-                    const taskType = task.maxContent ? `Max Content: ${task.maxContent}` : 'Open Task';
+                    const taskType = getTaskTypeString(task);
                     const countdown = getCountdownString(due);
+                    const rewards = extractRewards(task.details);
 
                     const message = `🚨 <b>NEW ONGOING TASK</b> 🚨\n\n` +
                                     `📌 <b>Title:</b> ${escapeHTML(taskTitle)}\n` +
                                     `🆔 <b>ID:</b> <code>${task.id}</code>\n` +
                                     `⏳ <b>Ends:</b> ${escapeHTML(due)}\n` +
                                     `⏱️ <b>Time Left:</b> <code>${countdown}</code>\n` +
-                                    `⚡ <b>Type:</b> ${escapeHTML(taskType)}\n\n` +
+                                    `⚡ <b>Type:</b> ${escapeHTML(taskType)}\n` +
+                                    `💰 <b>Rewards:</b> <code>${escapeHTML(rewards)}</code>\n\n` +
                                     `🔗 <a href="https://www.bitgetbuilder.com/">Execute on Builder Hub</a>`;
 
                     // Deliver message to Telegram Channels
@@ -474,14 +512,16 @@ async function handleCommand(chatId, text) {
             for (const task of displayTasks) {
                 const taskTitle = task.title || 'Untitled Task';
                 const due = task.deadline || 'Time Not Specified';
-                const taskType = task.maxContent ? `Max Content: ${task.maxContent}` : 'Open Task';
+                const taskType = getTaskTypeString(task);
                 const countdown = getCountdownString(due);
+                const rewards = extractRewards(task.details);
 
                 reportMessage += `📌 <b>Title:</b> ${escapeHTML(taskTitle)}\n`;
                 reportMessage += `🆔 <b>ID:</b> <code>${task.id || 'N/A'}</code>\n`;
                 reportMessage += `⏳ <b>Ends:</b> ${escapeHTML(due)}\n`;
                 reportMessage += `⏱️ <b>Time Left:</b> <code>${countdown}</code>\n`;
-                reportMessage += `⚡ <b>Type:</b> ${escapeHTML(taskType)}\n\n`;
+                reportMessage += `⚡ <b>Type:</b> ${escapeHTML(taskType)}\n`;
+                reportMessage += `💰 <b>Rewards:</b> <code>${escapeHTML(rewards)}</code>\n\n`;
             }
             
             if (activeTasks.length > 15) {
@@ -519,14 +559,16 @@ async function handleWhatsAppCommand(fromNumber, text) {
             for (const task of displayTasks) {
                 const taskTitle = task.title || 'Untitled Task';
                 const due = task.deadline || 'Time Not Specified';
-                const taskType = task.maxContent ? `Max Content: ${task.maxContent}` : 'Open Task';
+                const taskType = getTaskTypeString(task);
                 const countdown = getCountdownString(due);
+                const rewards = extractRewards(task.details);
 
                 reportMessage += `📌 *Title:* ${taskTitle}\n`;
                 reportMessage += `🆔 *ID:* \`${task.id || 'N/A'}\`\n`;
                 reportMessage += `⏳ *Ends:* ${due}\n`;
                 reportMessage += `⏱ *Time Left:* \`${countdown}\`\n`;
-                reportMessage += `⚡ *Type:* ${taskType}\n\n`;
+                reportMessage += `⚡ *Type:* ${taskType}\n`;
+                reportMessage += `💰 *Rewards:* \`${rewards}\`\n\n`;
             }
             
             if (activeTasks.length > 15) {
