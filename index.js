@@ -32,6 +32,19 @@ let offset = 0;
 let seenTasks = new Set(); 
 let isFirstBoot = true;    
 
+// Initialize dynamic active subscription set with master whitelisted IDs
+let activeChatIds = new Set(CHAT_IDS);
+
+// Custom persistent Telegram dashboard keyboard layout
+const authorizedKeyboard = {
+    keyboard: [
+        [ { text: "🔍 Scan" } ],
+        [ { text: "🔔 Subscribe" }, { text: "🔕 Unsubscribe" } ]
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: false
+};
+
 function escapeHTML(str) {
     return String(str)
         .replace(/&/g, '&amp;')
@@ -103,7 +116,6 @@ function getCountdownString(deadlineStr) {
 function extractRewards(details) {
     if (!details) return 'Not Specified';
     
-    // Remove raw HTML tags to prevent message body formatting breaks
     const cleanText = String(details).replace(/<[^>]*>/g, '');
     const lines = cleanText.split('\n');
     
@@ -117,7 +129,6 @@ function extractRewards(details) {
         return rewardLines.join(' | ');
     }
     
-    // Fallback: search for any text lines containing currency signs
     const fallbackLines = lines.map(line => line.trim()).filter(line => line.includes('$') || line.toUpperCase().includes('USDT'));
     if (fallbackLines.length > 0) {
         return fallbackLines.slice(0, 3).join(' | ');
@@ -201,19 +212,24 @@ function startSelfPinger() {
     }
 }
 
-// Telegram Message Engine
-async function sendMessage(chatId, text) {
+// Telegram Message Engine (Extended to support dynamic reply key markups)
+async function sendMessage(chatId, text, replyMarkup = null) {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
     try {
+        const payload = {
+            chat_id: chatId,
+            text: text,
+            parse_mode: 'HTML',
+            disable_web_page_preview: true
+        };
+        if (replyMarkup) {
+            payload.reply_markup = replyMarkup;
+        }
+
         const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                chat_id: chatId,
-                text: text,
-                parse_mode: 'HTML',
-                disable_web_page_preview: true
-            })
+            body: JSON.stringify(payload)
         });
         if (!response.ok) {
             const errBody = await response.json();
@@ -224,7 +240,7 @@ async function sendMessage(chatId, text) {
     }
 }
 
-// WhatsApp Outbound Message Engine (UPDATED: API endpoint targeted to v25.0)
+// WhatsApp Outbound Message Engine
 async function sendWhatsAppMessage(to, text) {
     if (!WHATSAPP_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) return;
     
@@ -451,9 +467,9 @@ async function scanTasksAutomatic() {
                                     `💰 <b>Rewards:</b> <code>${escapeHTML(rewards)}</code>\n\n` +
                                     `🔗 <a href="https://www.bitgetbuilder.com/">Execute on Builder Hub</a>`;
 
-                    // Deliver message to Telegram Channels
-                    for (const chatId of CHAT_IDS) {
-                        await sendMessage(chatId, message);
+                    // Deliver message to active Telegram subscribers
+                    for (const chatId of activeChatIds) {
+                        await sendMessage(chatId, message, authorizedKeyboard);
                     }
 
                     // Deliver formatted message to WhatsApp Recipients
@@ -489,20 +505,19 @@ async function handleCommand(chatId, text) {
                           `⏱️ <b>Auto Scan:</b> Every 10 seconds\n` +
                           `🧹 <b>Filter Mode:</b> Active (Role: Core/Trainee/VIP, Type: ${TASK_CHECK_TYPE.toUpperCase()}, Whitelisted UIDs: Excluded)\n\n` +
                           `🛠️ <b>Commands:</b>\n` +
-                          `🔹 /start - View setup menu.\n` +
-                          `🔹 /scan - Force an immediate manual check for live tasks.`;
+                          `🔹 Use the keyboard menu below to trigger live scans and subscribe to notifications.`;
                             
-        await sendMessage(chatId, startMenu);
+        await sendMessage(chatId, startMenu, authorizedKeyboard);
     } 
     
-    else if (cleanText === '/scan') {
-        await sendMessage(chatId, `🔍 <b>Scanning for ONGOING tasks...</b>`);
+    else if (cleanText === '/scan' || cleanText === '🔍 scan') {
+        await sendMessage(chatId, `🔍 <b>Scanning for ONGOING tasks...</b>`, authorizedKeyboard);
         try {
             const activeTasks = await fetchCampaigns();
             
             if (activeTasks.length === 0) {
                 const diagnosticReport = await getTaskFilteringReport();
-                await sendMessage(chatId, `⏸️ <b>Status:</b> Radar is clear. No active open tasks match.\n\n${diagnosticReport}`);
+                await sendMessage(chatId, `⏸️ <b>Status:</b> Radar is clear. No active open tasks match.\n\n${diagnosticReport}`, authorizedKeyboard);
                 return;
             }
 
@@ -529,11 +544,21 @@ async function handleCommand(chatId, text) {
             }
 
             reportMessage += `🔗 <a href="https://www.bitgetbuilder.com/">Access Builder Hub</a>`;
-            await sendMessage(chatId, reportMessage);
+            await sendMessage(chatId, reportMessage, authorizedKeyboard);
 
         } catch (error) {
-            await sendMessage(chatId, `❌ <b>Query Error:</b> ${escapeHTML(error.message)}`);
+            await sendMessage(chatId, `❌ <b>Query Error:</b> ${escapeHTML(error.message)}`, authorizedKeyboard);
         }
+    }
+
+    else if (cleanText === '/subscribe' || cleanText === '🔔 subscribe') {
+        activeChatIds.add(chatId);
+        await sendMessage(chatId, `✅ <b>Subscription Activated:</b> You will now receive automatic notifications when new ongoing tasks are found!`, authorizedKeyboard);
+    }
+
+    else if (cleanText === '/unsubscribe' || cleanText === '🔕 unsubscribe') {
+        activeChatIds.delete(chatId);
+        await sendMessage(chatId, `⏸️ <b>Alerts Paused:</b> You have unsubscribed from automated alerts. Push the <b>🔔 Subscribe</b> button anytime to resume.`, authorizedKeyboard);
     }
 }
 
